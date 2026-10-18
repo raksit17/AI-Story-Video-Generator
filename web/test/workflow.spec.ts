@@ -94,6 +94,21 @@ describe("Storyframe project and ComfyUI image workflow", () => {
     expect(project.scenes[0].imageUrl).toBe(imageUrl);
   });
 
+  it("lets users select Animagine XL 3.1 and persists the model in the saved project", async () => {
+    wrapper = mount(App);
+    expect((wrapper.findAll(".settings-row select")[3].element as HTMLSelectElement).value).toBe("sdxl-base");
+    await wrapper.findAll(".settings-row select")[3].setValue("animagine-xl-3.1");
+    await wrapper.get(".prompt-panel textarea").setValue("ลูน่าอยู่ในห้องประชุมก่อนพบประตูมิติ");
+    await wrapper.get(".generate").trigger("click");
+    await flushPromises();
+    await wrapper.get(".preview-controls button").trigger("click");
+    await flushPromises();
+    const save = requests.find(r => r.url.endsWith("/stories") && r.options.method === "POST");
+    expect(save).toBeTruthy();
+    expect(JSON.parse(String(save!.options.body)).imageModel).toBe("animagine-xl-3.1");
+    expect(JSON.parse(localStorage.getItem("storyframe-project-v1")!).imageModel).toBe("animagine-xl-3.1");
+  });
+
   it("explicitly generates a fresh image even when scene already has a saved image", async () => {
     wrapper = mount(App);
     await wrapper.get(".prompt-panel textarea").setValue("ลูน่าพบประตูมิติในห้องทำงาน");

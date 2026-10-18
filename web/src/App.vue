@@ -10,13 +10,13 @@ type Scene = { id:string; title:string; narration:string; imagePrompt:string; du
 
 type Character = { id?:string; name:string; look:string; reference:string; referenceUrl?:string; voiceId?:string|null }
 
-type Project = { storyId?:string; title:string; prompt:string; genre:string; language:string; ratio:string; scenes:Scene[]; character:Character; voice:string; metadata:{title:string; description:string; tags:string}; thumbnail:string }
+type Project = { storyId?:string; title:string; prompt:string; genre:string; language:string; ratio:string; imageModel:'sdxl-base'|'animagine-xl-3.1'; scenes:Scene[]; character:Character; voice:string; metadata:{title:string; description:string; tags:string}; thumbnail:string }
 
-const blank = ():Project => ({title:'เรื่องใหม่',prompt:'',genre:'Anime Fantasy',language:'ไทย',ratio:'9:16',scenes:[],character:{name:'',look:'',reference:''},voice:'',metadata:{title:'',description:'',tags:''},thumbnail:''})
+const blank = ():Project => ({title:'เรื่องใหม่',prompt:'',genre:'Anime Fantasy',language:'ไทย',ratio:'9:16',imageModel:'sdxl-base',scenes:[],character:{name:'',look:'',reference:''},voice:'',metadata:{title:'',description:'',tags:''},thumbnail:''})
 
 const saved = localStorage.getItem('storyframe-project-v1')
 
-const project = ref<Project>(saved ? JSON.parse(saved) : blank())
+const project = ref<Project>(saved ? {...blank(), ...JSON.parse(saved)} : blank())
 
 const activePhase=ref(1), selected=ref(0), busy=ref(false), toast=ref('')
 
@@ -190,7 +190,7 @@ function storyPayload(){
 
  const character=project.value.character
 
- return {title:project.value.title,prompt:project.value.prompt,genre:project.value.genre,language:project.value.language,aspect:project.value.ratio,
+ return {title:project.value.title,prompt:project.value.prompt,genre:project.value.genre,language:project.value.language,aspect:project.value.ratio,imageModel:project.value.imageModel,
 
   character:{id:character.id,name:character.name,look:character.look,referenceUrl:character.referenceUrl,voiceId:character.voiceId},
 
@@ -483,11 +483,11 @@ async function generateSceneImage(){
 
     // Explicit Generate Image always requests a NEW composition, even if a
     // previous scene PNG exists. Recovery is handled only when reopening.
-    imageProgress.value='กำลังส่งงานไป ComfyUI'
+    imageProgress.value=project.value.imageModel==='animagine-xl-3.1'?'กำลังส่งภาพผ่าน Animagine XL 3.1 + IP-Adapter':'กำลังส่งงานไป ComfyUI'
 
     const queued=await storyApi.startSceneImage(storyId,target.id)
 
-    imageProgress.value=queued.referenceMode==='ipadapter'?'ส่งภาพอ้างอิงเข้า SDXL IP-Adapter แล้ว':'กำลังสร้างภาพใหม่จาก Prompt (ไม่มีภาพอ้างอิง)'
+    imageProgress.value=project.value.imageModel==='animagine-xl-3.1'?'Animagine XL 3.1 กำลังสร้างภาพ'+(queued.referenceMode==='ipadapter'?' + IP-Adapter':''):(queued.referenceMode==='ipadapter'?'ส่งภาพอ้างอิงเข้า SDXL IP-Adapter แล้ว':'กำลังสร้างภาพใหม่จาก Prompt (ไม่มีภาพอ้างอิง)')
 
     await waitForSceneImage(storyId,target.id)
 
@@ -521,7 +521,7 @@ async function generateSceneImage(){
 
    <div class="phase-strip"><button v-for="n in 4" :key="n" :class="['phase-pill',{chosen:activePhase===n,done:n<activePhase}]" @click="activePhase=n"><span class="phase-num">{{n<activePhase?'✓':'0'+n}}</span><span><b>{{['สร้างเรื่องและภาพ','เสียงและวิดีโอ','ตัวละครคงที่','เตรียมลง YouTube'][n-1]}}</b><small>{{['STORYBOARD','VOICE & VIDEO','CHARACTER','PUBLISH'][n-1]}}</small></span><span v-if="n<4" class="phase-arrow">→</span></button></div>
 
-   <section v-if="activePhase===1" class="content-grid"><div class="left-col"><div class="panel prompt-panel"><div class="panel-head"><div><span class="step-tag">PHASE 01 / STORY</span><h2>เล่าไอเดียของคุณ</h2></div><span class="spark">✦</span></div><textarea v-model="project.prompt" placeholder="ตัวอย่าง: เด็กสาวนักเวทถูกขับไล่ออกจากอาณาจักร ก่อนจะค้นพบว่าตัวเองมีพลังของจอมมาร…"></textarea><div class="settings-row"><label>แนวเรื่อง<select v-model="project.genre"><option>Anime Fantasy</option><option>นิทานผจญภัย</option><option>ไซไฟ</option><option>ดราม่า</option><option>สารคดี</option></select></label><label>ภาษา<select v-model="project.language"><option>ไทย</option><option>English</option></select></label><label>สัดส่วน<select v-model="project.ratio"><option>9:16</option><option>16:9</option><option>1:1</option></select></label></div><button class="button primary generate" :disabled="busy" @click="generateStoryboard">✦ {{busy?'Qwen กำลังวางแผนเรื่อง…':'สร้างสตอรี่บอร์ดด้วย AI'}} <span>→</span></button><div class="hint">AI สร้างบทบรรยายและ Prompt ภาพให้ตรงเหตุการณ์เดียวกันทุกฉาก · ใช้ Ollama + Qwen ตามค่า Backend</div><div v-if="plannerError" class="hint" role="alert">{{plannerError}} — ตรวจ STORY_PROVIDER / OLLAMA_URL / OLLAMA_STORY_MODEL ใน api/.env</div><button class="text-btn" :disabled="busy" @click="draftStory">ใช้โครงเรื่องตัวอย่าง (ไม่ใช้ AI)</button></div>
+   <section v-if="activePhase===1" class="content-grid"><div class="left-col"><div class="panel prompt-panel"><div class="panel-head"><div><span class="step-tag">PHASE 01 / STORY</span><h2>เล่าไอเดียของคุณ</h2></div><span class="spark">✦</span></div><textarea v-model="project.prompt" placeholder="ตัวอย่าง: เด็กสาวนักเวทถูกขับไล่ออกจากอาณาจักร ก่อนจะค้นพบว่าตัวเองมีพลังของจอมมาร…"></textarea><div class="settings-row"><label>แนวเรื่อง<select v-model="project.genre"><option>Anime Fantasy</option><option>นิทานผจญภัย</option><option>ไซไฟ</option><option>ดราม่า</option><option>สารคดี</option></select></label><label>ภาษา<select v-model="project.language"><option>ไทย</option><option>English</option></select></label><label>สัดส่วน<select v-model="project.ratio"><option>9:16</option><option>16:9</option><option>1:1</option></select></label><label>โมเดลสร้างภาพ<select v-model="project.imageModel"><option value="sdxl-base">SDXL Base 1.0</option><option value="animagine-xl-3.1">Animagine XL 3.1 (Anime)</option></select></label></div><button class="button primary generate" :disabled="busy" @click="generateStoryboard">✦ {{busy?'Qwen กำลังวางแผนเรื่อง…':'สร้างสตอรี่บอร์ดด้วย AI'}} <span>→</span></button><div class="hint">AI สร้างบทบรรยายและ Prompt ภาพให้ตรงเหตุการณ์เดียวกันทุกฉาก · ใช้ Ollama + Qwen ตามค่า Backend · โมเดลภาพที่เลือกจะใช้เมื่อกดสร้างภาพแต่ละฉาก</div><div v-if="plannerError" class="hint" role="alert">{{plannerError}} — ตรวจ STORY_PROVIDER / OLLAMA_URL / OLLAMA_STORY_MODEL ใน api/.env</div><button class="text-btn" :disabled="busy" @click="draftStory">ใช้โครงเรื่องตัวอย่าง (ไม่ใช้ AI)</button></div>
 
     <div class="panel scenes-panel"><div class="panel-head"><div><span class="step-tag">YOUR STORY</span><h2>สตอรี่บอร์ด <span class="count">{{project.scenes.length}} ฉาก</span></h2></div><button class="text-btn" @click="addScene">＋ เพิ่มฉาก</button></div><div v-if="!project.scenes.length" class="empty-state"><div class="empty-icon">▧</div><b>เรื่องราวของคุณจะเริ่มตรงนี้</b><span>ใส่ Prompt แล้วกดสร้างสตอรี่บอร์ด</span></div><div v-else class="scene-list"><button v-for="(s,i) in project.scenes" :key="s.id" :class="['scene-row',{selected:selected===i}]" @click="selected=i"><span class="scene-index">{{String(i+1).padStart(2,'0')}}</span><span class="scene-thumb" :style="(s.image||s.imageUrl)?{backgroundImage:`url(${s.image||s.imageUrl})`}:{}">{{(s.image||s.imageUrl)?'':'✦'}}</span><span class="scene-copy"><b>{{s.title||'ฉากใหม่'}}</b><small>{{s.narration||'เพิ่มบทบรรยายของฉากนี้'}}</small></span><span class="duration">{{s.duration}}s</span><span class="reorder"><i @click.stop="move(i,-1)">↑</i><i @click.stop="move(i,1)">↓</i></span></button></div></div></div>
 

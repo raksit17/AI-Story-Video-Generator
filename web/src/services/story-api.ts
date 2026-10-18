@@ -5,6 +5,7 @@ export interface StoryPayload {
   genre: string;
   language: string;
   aspect: string;
+  imageModel: 'sdxl-base' | 'animagine-xl-3.1';
   characters: Array<{ name: string; description: string; appearance: string }>;
   scenes: Array<{
     id: string;
