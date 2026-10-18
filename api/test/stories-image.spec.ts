@@ -201,4 +201,59 @@ describe("Storyframe ComfyUI image recovery", () => {
       .rejects.toThrow("Missing ComfyUI node IPAdapterAdvanced");
   });
 
+  test("queues Animagine XL 3.1 with its own checkpoint, quality prompts, sampler and new scene latent", async () => {
+    await service.save({
+      title: "Animagine scene",
+      imageModel: "animagine-xl-3.1",
+      scenes: [{ id: sceneId, imagePrompt: "Luna typing at a desk, bright meeting room" }],
+    }, storyId);
+    let graph: Record<string, any> = {};
+    const fetchMock = jest.fn(async (url: string | URL | Request, options?: RequestInit) => {
+      const uri = String(url);
+      if (uri.endsWith("/object_info/CheckpointLoaderSimple")) {
+        return reply({ CheckpointLoaderSimple: { input: { required: {
+          ckpt_name: [["sd_xl_base_1.0.safetensors", "animagine-xl-3.1.safetensors"]],
+        } } } });
+      }
+      if (uri.endsWith("/prompt")) {
+        graph = JSON.parse(String(options?.body)).prompt;
+        return reply({ prompt_id: randomUUID() });
+      }
+      throw new Error("Unexpected ComfyUI request: " + uri);
+    });
+    global.fetch = fetchMock as typeof fetch;
+    const started = await service.startSceneImage(storyId, sceneId, "Luna typing at a desk, bright meeting room");
+    expect(started.status).toBe("queued");
+    expect(graph["4"].inputs.ckpt_name).toBe("animagine-xl-3.1.safetensors");
+    expect(graph["3"].inputs.steps).toBe(28);
+    expect(graph["3"].inputs.cfg).toBe(6);
+    expect(graph["3"].inputs.sampler_name).toBe("euler_ancestral");
+    expect(graph["3"].inputs.latent_image).toEqual(["5", 0]);
+    expect(graph["6"].inputs.text).toContain("masterpiece, best quality, very aesthetic, absurdres");
+    expect(graph["6"].inputs.text).toContain("Luna typing at a desk");
+    expect(graph["7"].inputs.text).toContain("bad hands");
+    const stored = await service.get(storyId);
+    expect((stored?.scenes as any[])[0].imageModel).toBe("animagine-xl-3.1");
+  });
+
+  test("reports missing Animagine checkpoint and does not queue a different model", async () => {
+    await service.save({
+      title: "Animagine missing",
+      imageModel: "animagine-xl-3.1",
+      scenes: [{ id: sceneId, imagePrompt: "Luna in a forest" }],
+    }, storyId);
+    const mock = jest.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith("/object_info/CheckpointLoaderSimple")) {
+        return reply({ CheckpointLoaderSimple: { input: { required: {
+          ckpt_name: [["sd_xl_base_1.0.safetensors"]],
+        } } } });
+      }
+      throw new Error("Should not submit image generation when checkpoint is missing");
+    });
+    global.fetch = mock as typeof fetch;
+    await expect(service.startSceneImage(storyId, sceneId, "Luna in a forest"))
+      .rejects.toThrow("Animagine XL 3.1 checkpoint not found");
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
 });
