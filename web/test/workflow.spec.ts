@@ -28,6 +28,7 @@ beforeEach(() => {
       return reply({ status: "queued", promptId: "comfy-prompt" }, 201);
     }
     if (url.endsWith("/image/status")) {
+      if (url.includes("/old-scene/")) return reply({ status: "completed", url: imageUrl });
       statusChecks++;
       // The initial status check finds no existing result, then the next
       // check after POST receives the completed PNG from ComfyUI history.
@@ -90,8 +91,8 @@ describe("Storyframe project and ComfyUI image workflow", () => {
     wrapper = mount(App);
     await flushPromises();
     expect(requests[0].url).toBe("/api/v1/stories/saved-story/scenes/old-scene/image/status");
-    // Initial check can recover an older file; simulate successful recovery response.
-    // For the above fixture the mock returns idle, so the app correctly stays unchanged.
-    expect(wrapper.get(".preview-frame").attributes("style") ?? "").not.toContain(imageUrl);
+    expect(wrapper.get(".preview-frame").attributes("style") ?? "").toContain(imageUrl);
+    const saved = JSON.parse(localStorage.getItem("storyframe-project-v1")!);
+    expect(saved.scenes[0].imageUrl).toBe(imageUrl);
   });
 });
