@@ -23,21 +23,30 @@ const failed = (code: number, message: string) =>
   ({ ok: false, status: code, json: async () => ({ message }) }) as Response;
 
 describe('Storyframe image API flow', () => {
-  it('saves the story before generating its scene image', async () => {
+  it('saves the story before queueing a scene image, then polls for the URL', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(ok({ id: 'story-one' }))
-      .mockResolvedValueOnce(ok({ url: '/api/v1/stories/assets/00000000-0000-0000-0000-000000000001.png' }));
+      .mockResolvedValueOnce(ok({ status: 'queued', promptId: 'prompt-one' }))
+      .mockResolvedValueOnce(ok({
+        status: 'completed',
+        url: '/api/v1/stories/assets/00000000-0000-0000-0000-000000000001.png',
+      }));
     const api = createStoryApi(fetcher as unknown as typeof fetch);
     const id = await api.saveStory(project);
-    const image = await api.generateSceneImage(id, 'scene-one');
+    const started = await api.startSceneImage(id, 'scene-one');
+    const completed = await api.getSceneImageStatus(id, 'scene-one');
     expect(id).toBe('story-one');
-    expect(image).toContain('/stories/assets/');
+    expect(started.status).toBe('queued');
+    expect(completed.status).toBe('completed');
+    expect(completed.url).toContain('/stories/assets/');
     expect(fetcher.mock.calls[0][0]).toBe('/api/v1/stories');
     expect(fetcher.mock.calls[0][1].method).toBe('POST');
     expect(JSON.parse(fetcher.mock.calls[0][1].body).scenes[0].imagePrompt)
       .toBe('A beautiful forest at sunset');
     expect(fetcher.mock.calls[1][0]).toBe('/api/v1/stories/story-one/scenes/scene-one/image');
     expect(fetcher.mock.calls[1][1].method).toBe('POST');
+    expect(fetcher.mock.calls[2][0]).toBe('/api/v1/stories/story-one/scenes/scene-one/image/status');
+    expect(fetcher.mock.calls[2][1].method).toBe('GET');
   });
 
   it('updates an existing story rather than creating duplicates', async () => {
@@ -68,7 +77,7 @@ describe('Storyframe image API flow', () => {
   it('exposes ComfyUI errors rather than silently creating a placeholder image', async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(failed(503, 'ComfyUI rejected the prompt'));
     const api = createStoryApi(fetcher as unknown as typeof fetch);
-    await expect(api.generateSceneImage('story-one', 'scene-one'))
+    await expect(api.startSceneImage('story-one', 'scene-one'))
       .rejects.toThrow('ComfyUI rejected the prompt');
   });
 });
