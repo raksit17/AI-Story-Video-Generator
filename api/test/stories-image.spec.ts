@@ -77,7 +77,7 @@ describe("Storyframe ComfyUI image recovery", () => {
     }) as unknown as typeof fetch;
 
     const started = await service.startSceneImage(storyId, sceneId, "A moonlit forest");
-    expect(started).toEqual({ status: "queued", promptId, referenceUsed: false });
+    expect(started).toEqual({ status: "queued", promptId, referenceUsed: false, referenceMode: "none" });
     const persisted = await service.get(storyId);
     expect((persisted?.scenes as any[])[0].imageJob.promptId).toBe(promptId);
     const finished = await service.sceneImageStatus(storyId, sceneId);
@@ -100,7 +100,7 @@ describe("Storyframe ComfyUI image recovery", () => {
     const status = await service.sceneImageStatus(storyId, sceneId);
     expect(status.status).toBe("idle");
   });
-  test("sends the actual saved character PNG through ComfyUI upload and LoadImage img2img", async () => {
+  test("conditions each new SDXL latent with a real uploaded character image via IP-Adapter", async () => {
     const profile = await service.saveCharacter({
       name: "Luna",
       description: "Brown hair, navy office vest",
@@ -118,6 +118,21 @@ describe("Storyframe ComfyUI image recovery", () => {
     const promptId = randomUUID();
     global.fetch = jest.fn(async (url: string | URL | Request, options?: RequestInit) => {
       const uri = String(url);
+      if (uri.endsWith("/object_info/IPAdapterAdvanced")) {
+        return reply({ IPAdapterAdvanced: { input: { required: {
+          model: ["MODEL"], ipadapter: ["IPADAPTER"], image: ["IMAGE"],
+        } } } });
+      }
+      if (uri.endsWith("/object_info/IPAdapterModelLoader")) {
+        return reply({ IPAdapterModelLoader: { input: { required: {
+          ipadapter_file: [["ip-adapter-plus_sdxl_vit-h.safetensors"]],
+        } } } });
+      }
+      if (uri.endsWith("/object_info/CLIPVisionLoader")) {
+        return reply({ CLIPVisionLoader: { input: { required: {
+          clip_name: [["CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"]],
+        } } } });
+      }
       if (uri.endsWith("/upload/image")) {
         expect(options?.method).toBe("POST");
         const form = options?.body as FormData;
@@ -135,14 +150,26 @@ describe("Storyframe ComfyUI image recovery", () => {
       throw new Error(`Unexpected ComfyUI request: ${uri}`);
     }) as typeof fetch;
     const started = await service.startSceneImage(storyId, sceneId, "Luna at sunset");
-    expect(started).toMatchObject({ promptId, referenceUsed: true });
-    expect(queuedGraph["10"]).toMatchObject({ class_type: "LoadImage", inputs: { image: "luna.png" } });
-    expect(queuedGraph["12"].class_type).toBe("ImageScale");
-    expect(queuedGraph["11"].class_type).toBe("VAEEncode");
-    expect(queuedGraph["3"].inputs.latent_image).toEqual(["11", 0]);
-    expect(queuedGraph["3"].inputs.denoise).toBeLessThan(1);
+    expect(started).toMatchObject({ promptId, referenceUsed: true, referenceMode: "ipadapter" });
+    expect(queuedGraph["20"]).toMatchObject({ class_type: "LoadImage", inputs: { image: "luna.png" } });
+    expect(queuedGraph["21"].class_type).toBe("CLIPVisionLoader");
+    expect(queuedGraph["22"].class_type).toBe("IPAdapterModelLoader");
+    expect(queuedGraph["23"]).toMatchObject({
+      class_type: "IPAdapterAdvanced",
+      inputs: {
+        model: ["4", 0], ipadapter: ["22", 0], image: ["20", 0],
+        clip_vision: ["21", 0], weight: 0.7,
+      },
+    });
+    expect(queuedGraph["3"].inputs.model).toEqual(["23", 0]);
+    expect(queuedGraph["3"].inputs.latent_image).toEqual(["5", 0]);
+    expect(queuedGraph["3"].inputs.denoise).toBe(1);
+    expect(queuedGraph["6"].inputs.text).toContain("Luna at sunset");
+    expect(queuedGraph["11"]).toBeUndefined();
+    expect(queuedGraph["12"]).toBeUndefined();
     const storyAfter = await service.get(storyId);
     expect((storyAfter?.scenes as any[])[0].imageReferenceUrl).toBe(profile.referenceUrl);
+    expect((storyAfter?.scenes as any[])[0].imageReferenceMode).toBe("ipadapter");
   });
 
   test("rejects missing character PNG rather than silently generating text-only", async () => {
@@ -157,6 +184,21 @@ describe("Storyframe ComfyUI image recovery", () => {
     await expect(service.startSceneImage(storyId, sceneId, "Luna at sunset"))
       .rejects.toThrow("Character reference missing from API storage");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("fails explicitly when IPAdapterAdvanced custom node is not installed", async () => {
+    const profile = await service.saveCharacter({
+      name: "Luna", description: "Brown hair, navy vest",
+      referenceData: `data:image/png;base64,${Buffer.from(PNG).toString("base64")}`,
+    });
+    await service.save({ title: "Story", scenes: [{ id: sceneId, imagePrompt: "Forest" }],
+      characters: [{ id: profile.id, name: "Luna", referenceUrl: profile.referenceUrl }] }, storyId);
+    global.fetch = jest.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith("/object_info/IPAdapterAdvanced")) return reply({});
+      throw new Error("Should not try uploading or generating without IP-Adapter");
+    }) as typeof fetch;
+    await expect(service.startSceneImage(storyId, sceneId, "Forest"))
+      .rejects.toThrow("Missing ComfyUI node IPAdapterAdvanced");
   });
 
 });

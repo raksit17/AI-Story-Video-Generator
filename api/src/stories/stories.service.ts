@@ -284,10 +284,10 @@ export class StoriesService {
     const story = await this.get(storyId);
     if (!story) throw new BadRequestException("Story not found");
     const scene = this.sceneForImage(story, sceneId);
-    const pending = scene.imageJob as { promptId: string; submittedAt: number } | undefined;
+    const pending = scene.imageJob as { promptId: string; submittedAt: number; referenceUsed?: boolean; referenceMode?: string } | undefined;
     const timeout = Number(process.env.COMFYUI_JOB_TIMEOUT_MS ?? 900000);
     if (pending?.promptId && Date.now() - pending.submittedAt < timeout) {
-      return { status: "queued", promptId: pending.promptId, referenceUsed: Boolean((pending as any).referenceUsed) };
+      return { status: "queued", promptId: pending.promptId, referenceUsed: Boolean(pending.referenceUsed), referenceMode: pending.referenceMode ?? "none" };
     }
 
     const workflowPath = resolve("workflows/sdxl-background-api.json");
@@ -303,7 +303,8 @@ export class StoriesService {
     graph["7"].inputs.text = "text, watermark, logo, blurry, deformed, low quality";
     graph["9"].inputs.filename_prefix = `AIStory/${storyId}/${sceneId}`;
 
-    // Always resolve the latest saved profile; do not silently ignore an invalid reference.
+    // Character reference conditions the SDXL model, NOT its latent.
+    // This avoids repeated crops/compositions from the original full-body reference.
     const characters = Array.isArray(story.characters) ? story.characters as Array<Record<string, unknown>> : [];
     const character = characters.find((item) => item.id || item.referenceUrl);
     const profileId = typeof character?.id === "string" ? character.id : undefined;
@@ -311,23 +312,42 @@ export class StoriesService {
     const referenceUrl: unknown = profile?.referenceUrl ?? character?.referenceUrl ?? (story as any).character?.referenceUrl;
     const hasReference = typeof referenceUrl === "string" && referenceUrl.trim().length > 0;
     let referenceUsed = false;
+    let referenceMode: "none" | "ipadapter" = "none";
     if (hasReference) {
       const path = this.assetFromUrl(referenceUrl, "image");
       if (!path) throw new BadRequestException("Invalid character reference URL; please save the PNG/JPEG profile");
       try { await access(path); }
       catch { throw new BadRequestException("Character reference missing from API storage; upload it again"); }
+
+      // Fail loudly if the custom nodes / compatible SDXL model files are missing.
+      // No transparent fallback to img2img that would reproduce the same crop.
+      const modelFile = process.env.COMFYUI_IPADAPTER_MODEL || "ip-adapter-plus_sdxl_vit-h.safetensors";
+      const visionFile = process.env.COMFYUI_CLIP_VISION_MODEL || "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors";
+      await this.assertIpAdapterReady(modelFile, visionFile);
       const image = await this.uploadComfyReference(path);
-      graph["10"] = { class_type: "LoadImage", inputs: { image } };
-      graph["12"] = { class_type: "ImageScale", inputs: { image: ["10", 0], upscale_method: "lanczos", width, height, crop: "center" } };
-      graph["11"] = { class_type: "VAEEncode", inputs: { pixels: ["12", 0], vae: ["4", 2] } };
-      graph["3"].inputs.latent_image = ["11", 0];
-      const denoise = Number(process.env.COMFYUI_REFERENCE_DENOISE ?? 0.45);
-      graph["3"].inputs.denoise = Number.isFinite(denoise) ? Math.max(0.25, Math.min(0.8, denoise)) : 0.45;
+      graph["20"] = { class_type: "LoadImage", inputs: { image } };
+      graph["21"] = { class_type: "CLIPVisionLoader", inputs: { clip_name: visionFile } };
+      graph["22"] = { class_type: "IPAdapterModelLoader", inputs: { ipadapter_file: modelFile } };
+      const configuredWeight = Number(process.env.COMFYUI_IPADAPTER_WEIGHT ?? 0.7);
+      const weight = Number.isFinite(configuredWeight) ? Math.max(0.1, Math.min(1.5, configuredWeight)) : 0.7;
+      const configuredEnd = Number(process.env.COMFYUI_IPADAPTER_END_AT ?? 0.85);
+      const endAt = Number.isFinite(configuredEnd) ? Math.max(0.1, Math.min(1, configuredEnd)) : 0.85;
+      graph["23"] = {
+        class_type: "IPAdapterAdvanced",
+        inputs: {
+          model: ["4", 0], ipadapter: ["22", 0], image: ["20", 0], clip_vision: ["21", 0],
+          weight, weight_type: "linear", combine_embeds: "concat",
+          start_at: 0, end_at: endAt, embeds_scaling: "V only",
+        },
+      };
+      graph["3"].inputs.model = ["23", 0];
       referenceUsed = true;
-      Logger.log(`Applying real img2img reference for scene ${sceneId}`, "StoryImage");
-    } else if (character?.id) {
-      Logger.warn(`Character ${String(character.id)} has no image; generating prompt-only`, "StoryImage");
+      referenceMode = "ipadapter";
+      Logger.log(`Applying SDXL IP-Adapter reference to scene ${sceneId}`, "StoryImage");
     }
+    // For every scene, generate a fresh composition from the scene text prompt.
+    graph["3"].inputs.latent_image = ["5", 0];
+    graph["3"].inputs.denoise = 1;
 
     let response: Response;
     try {
@@ -346,11 +366,44 @@ export class StoriesService {
     }
     const accepted = await response.json() as { prompt_id?: string };
     if (!accepted.prompt_id) throw new ServiceUnavailableException("ComfyUI did not return prompt_id");
-    scene.imageJob = { promptId: accepted.prompt_id, submittedAt: Date.now(), referenceUsed };
+    scene.imageJob = { promptId: accepted.prompt_id, submittedAt: Date.now(), referenceUsed, referenceMode };
     scene.imageReferenceUrl = referenceUsed ? referenceUrl : null;
+    scene.imageReferenceMode = referenceMode;
     await this.save(story, storyId);
     Logger.log(`Image queued: story=${storyId} scene=${sceneId} prompt=${accepted.prompt_id}`, "StoryImage");
-    return { status: "queued", promptId: accepted.prompt_id, referenceUsed };
+    return { status: "queued", promptId: accepted.prompt_id, referenceUsed, referenceMode };
+  }
+
+  private async assertIpAdapterReady(modelFile: string, visionFile: string): Promise<void> {
+    const inspect = async (name: string) => {
+      let response: Response;
+      try {
+        response = await fetch(`${this.comfyUrl()}/object_info/${name}`, { signal: AbortSignal.timeout(7000) });
+      } catch (error) {
+        throw new ServiceUnavailableException(`Cannot inspect ComfyUI IP-Adapter nodes: ${String(error)}`);
+      }
+      if (!response.ok) throw new ServiceUnavailableException(`ComfyUI cannot inspect ${name} (HTTP ${response.status}). Install ComfyUI_IPAdapter_plus and restart ComfyUI.`);
+      const body = await response.json() as Record<string, any>;
+      const schema = body[name];
+      if (!schema?.input?.required) {
+        throw new ServiceUnavailableException(`Missing ComfyUI node ${name}. Install ComfyUI_IPAdapter_plus and restart ComfyUI.`);
+      }
+      return schema.input.required as Record<string, any>;
+    };
+    const advanced = await inspect("IPAdapterAdvanced");
+    if (!advanced.model || !advanced.ipadapter || !advanced.image) {
+      throw new ServiceUnavailableException("Installed IPAdapterAdvanced node has unexpected inputs. Update ComfyUI_IPAdapter_plus.");
+    }
+    const ipInputs = await inspect("IPAdapterModelLoader");
+    const ipNames = ipInputs.ipadapter_file?.[0];
+    if (Array.isArray(ipNames) && !ipNames.includes(modelFile)) {
+      throw new ServiceUnavailableException(`Missing SDXL IP-Adapter model: ${modelFile}. Put it in ComfyUI/models/ipadapter and restart ComfyUI.`);
+    }
+    const clipInputs = await inspect("CLIPVisionLoader");
+    const visionNames = clipInputs.clip_name?.[0];
+    if (Array.isArray(visionNames) && !visionNames.includes(visionFile)) {
+      throw new ServiceUnavailableException(`Missing CLIP Vision model: ${visionFile}. Put it in ComfyUI/models/clip_vision and restart ComfyUI.`);
+    }
   }
 
   private async uploadComfyReference(path: string): Promise<string> {
@@ -380,7 +433,7 @@ export class StoriesService {
 
     if (!job?.promptId) {
       if (typeof scene.imageUrl === "string" && scene.imageUrl) {
-        return { status: "completed", url: scene.imageUrl, referenceUsed: Boolean(scene.imageReferenceUrl) };
+        return { status: "completed", url: scene.imageUrl, referenceUsed: Boolean(scene.imageReferenceUrl), referenceMode: scene.imageReferenceMode ?? "none" };
       }
       const previous = await recoverPreviousOutput(base, storyId, sceneId);
       if (previous) return this.importCompletedImage(storyId, sceneId, previous.image);
@@ -407,7 +460,7 @@ export class StoriesService {
         running = (data.queue_running ?? []).some((row) => row[1] === job.promptId);
       }
     } catch { /* History remains authoritative even if queue is temporarily unavailable. */ }
-    return { status: running ? "running" : "queued", promptId: job.promptId, referenceUsed: Boolean((job as any).referenceUsed) };
+    return { status: running ? "running" : "queued", promptId: job.promptId, referenceUsed: Boolean((job as any).referenceUsed), referenceMode: (job as any).referenceMode ?? "none" };
   }
 
   private async importCompletedImage(storyId: string, sceneId: string, image: ComfyImage) {
@@ -431,7 +484,7 @@ export class StoriesService {
     scene.imageJob = null;
     await this.save(story, storyId);
     Logger.log(`Imported ComfyUI image: story=${storyId} scene=${sceneId} bytes=${bytes.length}`, "StoryImage");
-    return { status: "completed", url, referenceUsed: Boolean(scene.imageReferenceUrl) };
+    return { status: "completed", url, referenceUsed: Boolean(scene.imageReferenceUrl), referenceMode: scene.imageReferenceMode ?? "none" };
   }
 
   async generateVoice(story: Story, sceneId: string, requestedVoice?: string) {

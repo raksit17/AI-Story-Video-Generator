@@ -21,6 +21,7 @@ export interface SceneImageStatus {
   status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
   promptId?: string;
   referenceUsed?: boolean;
+  referenceMode?: 'none' | 'img2img' | 'ipadapter';
   url?: string;
   error?: string;
 }
