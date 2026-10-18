@@ -77,7 +77,7 @@ describe("Storyframe ComfyUI image recovery", () => {
     }) as unknown as typeof fetch;
 
     const started = await service.startSceneImage(storyId, sceneId, "A moonlit forest");
-    expect(started).toEqual({ status: "queued", promptId });
+    expect(started).toEqual({ status: "queued", promptId, referenceUsed: false });
     const persisted = await service.get(storyId);
     expect((persisted?.scenes as any[])[0].imageJob.promptId).toBe(promptId);
     const finished = await service.sceneImageStatus(storyId, sceneId);
@@ -100,4 +100,63 @@ describe("Storyframe ComfyUI image recovery", () => {
     const status = await service.sceneImageStatus(storyId, sceneId);
     expect(status.status).toBe("idle");
   });
+  test("sends the actual saved character PNG through ComfyUI upload and LoadImage img2img", async () => {
+    const profile = await service.saveCharacter({
+      name: "Luna",
+      description: "Brown hair, navy office vest",
+      referenceData: `data:image/png;base64,${Buffer.from(PNG).toString("base64")}`,
+    });
+    const saved = await service.save({
+      title: "Scene with Luna",
+      aspect: "9:16",
+      scenes: [{ id: sceneId, imagePrompt: "Luna at sunset" }],
+      characters: [{ id: profile.id, name: profile.name, description: profile.description, referenceUrl: profile.referenceUrl }],
+    }, storyId);
+    expect(saved.characters).toHaveLength(1);
+    let uploaded = false;
+    let queuedGraph: any;
+    const promptId = randomUUID();
+    global.fetch = jest.fn(async (url: string | URL | Request, options?: RequestInit) => {
+      const uri = String(url);
+      if (uri.endsWith("/upload/image")) {
+        expect(options?.method).toBe("POST");
+        const form = options?.body as FormData;
+        const file = form.get("image") as File;
+        expect(file).toBeTruthy();
+        expect(Buffer.from(await file.arrayBuffer())).toEqual(Buffer.from(PNG));
+        uploaded = true;
+        return reply({ name: "luna.png", subfolder: "" });
+      }
+      if (uri.endsWith("/prompt")) {
+        expect(uploaded).toBe(true);
+        queuedGraph = JSON.parse(String(options?.body)).prompt;
+        return reply({ prompt_id: promptId });
+      }
+      throw new Error(`Unexpected ComfyUI request: ${uri}`);
+    }) as typeof fetch;
+    const started = await service.startSceneImage(storyId, sceneId, "Luna at sunset");
+    expect(started).toMatchObject({ promptId, referenceUsed: true });
+    expect(queuedGraph["10"]).toMatchObject({ class_type: "LoadImage", inputs: { image: "luna.png" } });
+    expect(queuedGraph["12"].class_type).toBe("ImageScale");
+    expect(queuedGraph["11"].class_type).toBe("VAEEncode");
+    expect(queuedGraph["3"].inputs.latent_image).toEqual(["11", 0]);
+    expect(queuedGraph["3"].inputs.denoise).toBeLessThan(1);
+    const storyAfter = await service.get(storyId);
+    expect((storyAfter?.scenes as any[])[0].imageReferenceUrl).toBe(profile.referenceUrl);
+  });
+
+  test("rejects missing character PNG rather than silently generating text-only", async () => {
+    const fake = `/api/v1/stories/assets/${randomUUID()}.png`;
+    await service.save({
+      title: "Broken reference",
+      scenes: [{ id: sceneId, imagePrompt: "Luna at sunset" }],
+      characters: [{ id: randomUUID(), name: "Luna", referenceUrl: fake }],
+    }, storyId);
+    const fetchMock = jest.fn();
+    global.fetch = fetchMock as typeof fetch;
+    await expect(service.startSceneImage(storyId, sceneId, "Luna at sunset"))
+      .rejects.toThrow("Character reference missing from API storage");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
 });
