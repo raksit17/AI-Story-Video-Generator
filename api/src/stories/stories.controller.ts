@@ -76,7 +76,12 @@ export class StoriesController {
       throw new BadRequestException("Scene image prompt is required");
     const characters = Array.isArray(story.characters) ? story.characters as Array<Record<string, unknown>> : [];
     const guide = characters.map((item) => `${String(item.name ?? "Character")}: ${String(item.description ?? item.appearance ?? "")}`).join("; ");
-    return this.stories.generateImage(id, sceneId, `${scene.imagePrompt}${guide ? `. Character guide: ${guide}` : ""}`);
+    return this.stories.startSceneImage(id, sceneId, `${scene.imagePrompt}${guide ? `. Character guide: ${guide}` : ""}`);
+  }
+
+  @Get(":id/scenes/:sceneId/image/status")
+  imageStatus(@Param("id") id: string, @Param("sceneId") sceneId: string) {
+    return this.stories.sceneImageStatus(id, sceneId);
   }
 
   @Post(":id/scenes/:sceneId/voice")
