@@ -124,6 +124,22 @@ async function generateSceneImage(){
     }
     const storyId=await storyApi.saveStory(payload,project.value.storyId)
     project.value.storyId=storyId
+    // Check history before submitting, so an earlier successful image is
+    // recovered instead of accidentally generating the same scene twice.
+    if(!target.imageUrl){
+      imageProgress.value='ตรวจสอบภาพที่สร้างไว้ก่อนหน้า'
+      const existing=await storyApi.getSceneImageStatus(storyId,target.id)
+      if(existing.status==='completed'&&existing.url){
+        target.imageUrl=existing.url
+        target.image=existing.url
+        notify('กู้ภาพจาก ComfyUI สำเร็จ')
+        return
+      }
+      if(existing.status==='queued'||existing.status==='running'){
+        await waitForSceneImage(storyId,target.id)
+        return
+      }
+    }
     imageProgress.value='กำลังส่งงานไป ComfyUI'
     await storyApi.startSceneImage(storyId,target.id)
     await waitForSceneImage(storyId,target.id)
