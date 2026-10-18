@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { Logger } from "@nestjs/common";
+import { outputImage, promptHistory, recoverPreviousOutput, retrieveComfyPng, type ComfyImage } from "./comfy-story-client";
 
 type Story = Record<string, unknown> & { id: string; updatedAt: string };
 
@@ -141,6 +143,16 @@ export class StoriesService {
     if (!/^[0-9a-f-]{36}$/i.test(id)) throw new BadRequestException("Invalid story ID");
     await mkdir(this.root, { recursive: true });
     const storyInput = structuredClone(input) as Record<string, any>;
+    // Do not let a browser save overwrite the server-owned ComfyUI job state.
+    const savedStory = await this.read(id);
+    const savedScenes = (savedStory?.scenes as Array<Record<string, any>> | undefined) ?? [];
+    for (const scene of storyInput.scenes ?? []) {
+      const old = savedScenes.find((previous) => previous.id === scene.id);
+      if (!Object.prototype.hasOwnProperty.call(scene, "imageJob")) {
+        scene.imageJob = old?.imageJob ?? null;
+      }
+      if (!scene.imageUrl && old?.imageUrl) scene.imageUrl = old.imageUrl;
+    }
     delete storyInput.thumbnailData;
     delete storyInput.musicData;
     for (const scene of storyInput.scenes ?? []) {
@@ -190,8 +202,30 @@ export class StoriesService {
     return { title: String(result.title ?? "Untitled story").slice(0, 120), synopsis: String(result.synopsis ?? "").slice(0, 2000), characters: Array.isArray(result.characters) ? result.characters.slice(0, 12) : [], scenes: sceneRows };
   }
 
-  async generateImage(storyId: string, sceneId: string, imagePrompt: string) {
-    const base = (process.env.COMFYUI_URL ?? "http://127.0.0.1:8188").replace(/\/$/, "");
+
+  private comfyUrl() {
+    return (process.env.COMFYUI_URL ?? "http://127.0.0.1:8188").replace(/\\/$/, "");
+  }
+
+  private sceneForImage(story: Story, sceneId: string): Record<string, any> {
+    const scene = (story.scenes as Array<Record<string, any>> | undefined)
+      ?.find((item) => item.id === sceneId);
+    if (!scene) throw new BadRequestException("Scene not found in saved story");
+    return scene;
+  }
+
+  // POST returns as soon as ComfyUI accepts the prompt, instead of holding
+  // the browser connection until the full SDXL inference and download finish.
+  async startSceneImage(storyId: string, sceneId: string, imagePrompt: string) {
+    const story = await this.get(storyId);
+    if (!story) throw new BadRequestException("Story not found");
+    const scene = this.sceneForImage(story, sceneId);
+    const pending = scene.imageJob as { promptId: string; submittedAt: number } | undefined;
+    const timeout = Number(process.env.COMFYUI_JOB_TIMEOUT_MS ?? 900000);
+    if (pending?.promptId && Date.now() - pending.submittedAt < timeout) {
+      return { status: "queued", promptId: pending.promptId };
+    }
+
     const workflowPath = resolve("workflows/sdxl-background-api.json");
     let graph: any;
     try { graph = JSON.parse(await readFile(workflowPath, "utf8")); }
@@ -201,42 +235,93 @@ export class StoriesService {
     graph["6"].inputs.text = `${imagePrompt}, cinematic illustration, consistent story character design`;
     graph["7"].inputs.text = "text, watermark, logo, blurry, deformed, low quality";
     graph["9"].inputs.filename_prefix = `AIStory/${storyId}/${sceneId}`;
-    const queued = await fetch(`${base}/prompt`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ prompt:graph, client_id:storyId }), signal:AbortSignal.timeout(15000) });
-    if (!queued.ok) throw new ServiceUnavailableException(`ComfyUI rejected the prompt (${queued.status})`);
-    const { prompt_id } = await queued.json() as { prompt_id: string };
-    const deadline = Date.now() + Number(process.env.COMFYUI_JOB_TIMEOUT_MS ?? 900000);
-    let image: any;
-    while (Date.now() < deadline) {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 2000));
-      const historyResponse = await fetch(`${base}/history/${encodeURIComponent(prompt_id)}`, { signal:AbortSignal.timeout(15000) });
-      if (!historyResponse.ok) continue;
-      const history = await historyResponse.json() as any;
-      const entry = history[prompt_id];
-      if (!entry) continue;
-      const outputs = Object.values(entry.outputs ?? {}) as any[];
-      image = outputs.flatMap((out) => out.images ?? [])[0];
-      if (image) break;
-      if (entry.status?.status_str === "error") throw new ServiceUnavailableException("ComfyUI image generation failed");
+
+    let response: Response;
+    try {
+      response = await fetch(`${this.comfyUrl()}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: graph, client_id: storyId }),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (error) {
+      throw new ServiceUnavailableException(`ComfyUI queue request failed: ${String(error)}`);
     }
-    if (!image) throw new ServiceUnavailableException("ComfyUI image generation timed out");
-    const params = new URLSearchParams({ filename: image.filename, subfolder: image.subfolder ?? "", type: image.type ?? "output" });
-    const fileResponse = await fetch(`${base}/view?${params}`, { signal:AbortSignal.timeout(30000) });
-    if (!fileResponse.ok) throw new ServiceUnavailableException("Could not retrieve generated image");
+    if (!response.ok) {
+      const details = (await response.text()).slice(0, 500);
+      throw new ServiceUnavailableException(`ComfyUI rejected the prompt (${response.status}): ${details}`);
+    }
+    const accepted = await response.json() as { prompt_id?: string };
+    if (!accepted.prompt_id) throw new ServiceUnavailableException("ComfyUI did not return prompt_id");
+    scene.imageJob = { promptId: accepted.prompt_id, submittedAt: Date.now() };
+    await this.save(story, storyId);
+    Logger.log(`Image queued: story=${storyId} scene=${sceneId} prompt=${accepted.prompt_id}`, "StoryImage");
+    return { status: "queued", promptId: accepted.prompt_id };
+  }
+
+  // GET is also a recovery endpoint: it can find an output generated by the
+  // old synchronous API whose /image request never made it back to the browser.
+  async sceneImageStatus(storyId: string, sceneId: string) {
+    const story = await this.get(storyId);
+    if (!story) throw new BadRequestException("Story not found");
+    const scene = this.sceneForImage(story, sceneId);
+    const job = scene.imageJob as { promptId: string; submittedAt: number } | null | undefined;
+    const base = this.comfyUrl();
+
+    if (!job?.promptId) {
+      if (typeof scene.imageUrl === "string" && scene.imageUrl) {
+        return { status: "completed", url: scene.imageUrl };
+      }
+      const previous = await recoverPreviousOutput(base, storyId, sceneId);
+      if (previous) return this.importCompletedImage(storyId, sceneId, previous.image);
+      return { status: "idle" };
+    }
+
+    const entry = await promptHistory(base, job.promptId);
+    const image = outputImage(entry);
+    if (image) return this.importCompletedImage(storyId, sceneId, image);
+    if (entry?.status?.status_str === "error") {
+      scene.imageJob = null;
+      await this.save(story, storyId);
+      Logger.error(`ComfyUI job failed: ${job.promptId}`, "", "StoryImage");
+      return { status: "failed", error: "ComfyUI could not generate the image. Check its console." };
+    }
+    if (Date.now() - job.submittedAt > Number(process.env.COMFYUI_JOB_TIMEOUT_MS ?? 900000)) {
+      return { status: "failed", error: "ComfyUI image generation timed out; check history before retrying." };
+    }
+    let running = false;
+    try {
+      const queue = await fetch(`${base}/queue`, { signal: AbortSignal.timeout(5000) });
+      if (queue.ok) {
+        const data = await queue.json() as { queue_running?: unknown[][] };
+        running = (data.queue_running ?? []).some((row) => row[1] === job.promptId);
+      }
+    } catch { /* History remains authoritative even if queue is temporarily unavailable. */ }
+    return { status: running ? "running" : "queued", promptId: job.promptId };
+  }
+
+  private async importCompletedImage(storyId: string, sceneId: string, image: ComfyImage) {
+    // Validate the descriptor before fetching. Avoid accepting another story's asset.
+    const folder = String(image.subfolder ?? "").replace(/\\/g, "/").replace(/\\/+$/, "");
+    if (folder !== `AIStory/${storyId}` || !image.filename.startsWith(`${sceneId}_`)) {
+      throw new ServiceUnavailableException("ComfyUI output does not belong to this scene");
+    }
+    const bytes = await retrieveComfyPng(this.comfyUrl(), image);
+    const story = await this.get(storyId);
+    if (!story) throw new BadRequestException("Story was removed");
+    const scene = this.sceneForImage(story, sceneId);
+    if (scene.imageUrl && !scene.imageJob) {
+      return { status: "completed", url: scene.imageUrl };
+    }
     await mkdir(this.root, { recursive: true });
-    const fileId = randomUUID();
-    const filePath = join(this.root, `${fileId}.png`);
-    await writeFile(filePath, Buffer.from(await fileResponse.arrayBuffer()));
-    const imageUrl = `/api/v1/stories/assets/${fileId}.png`;
-    // Persist scene.imageUrl on the latest saved story for later video rendering.
-    const latestStory = await this.get(storyId);
-    const targetScene = (latestStory?.scenes as Array<Record<string, unknown>> | undefined)
-      ?.find((scene) => scene.id === sceneId);
-    if (!latestStory || !targetScene) {
-      throw new BadRequestException("Story or scene removed during image generation");
-    }
-    targetScene.imageUrl = imageUrl;
-    await this.save(latestStory, latestStory.id);
-    return { id: fileId, url: imageUrl };
+    const id = randomUUID();
+    const url = `/api/v1/stories/assets/${id}.png`;
+    await writeFile(join(this.root, `${id}.png`), bytes);
+    scene.imageUrl = url;
+    scene.imageJob = null;
+    await this.save(story, storyId);
+    Logger.log(`Imported ComfyUI image: story=${storyId} scene=${sceneId} bytes=${bytes.length}`, "StoryImage");
+    return { status: "completed", url };
   }
 
   async generateVoice(story: Story, sceneId: string, requestedVoice?: string) {
