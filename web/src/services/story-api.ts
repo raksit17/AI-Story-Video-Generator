@@ -20,6 +20,7 @@ export interface StoryPayload {
 export interface SceneImageStatus {
   status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
   promptId?: string;
+  referenceUsed?: boolean;
   url?: string;
   error?: string;
 }

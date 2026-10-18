@@ -14,7 +14,11 @@ const imageError=ref('')
 const imageProgress=ref('')
 const imageSeconds=ref(0)
 const projects=ref<ProjectSummary[]>([]), characterProfiles=ref<CharacterProfile[]>([]), mossVoices=ref<MossVoice[]>([])
+<<<<<<< HEAD
 const selectedProfileId=ref(''), selectedVoiceId=ref(''), savingProject=ref(false), voiceBusy=ref(false)
+=======
+const selectedProfileId=ref(''), selectedVoiceId=ref(''), savingProject=ref(false), savingCharacter=ref(false), applyingCharacter=ref(false), voiceBusy=ref(false)
+>>>>>>> origin/main
 const currentProjectId=computed(()=>project.value.storyId)
 const current = computed(()=>project.value.scenes[selected.value])
 watch(project, v=>localStorage.setItem('storyframe-project-v1',JSON.stringify(v)),{deep:true})
@@ -37,7 +41,7 @@ function addScene(){project.value.scenes.push(scene('ฉากใหม่','','
 function move(i:number,d:number){const j=i+d;if(j<0||j>=project.value.scenes.length)return;const a=project.value.scenes.splice(i,1)[0];project.value.scenes.splice(j,0,a);selected.value=j}
 function fileData(e:Event, cb:(s:string)=>void){const file=(e.target as HTMLInputElement).files?.[0];if(!file)return;const reader=new FileReader();reader.onload=()=>cb(String(reader.result));reader.readAsDataURL(file)}
 function addImage(e:Event){const target=current.value;if(target)fileData(e,s=>{target.image=s;target.imageUrl=undefined})}
-function addCharacter(e:Event){fileData(e,s=>project.value.character.reference=s)}
+function addCharacter(e:Event){fileData(e,s=>{project.value.character.reference=s;project.value.character.referenceUrl=undefined;notify('เลือกรูปแล้ว — กดบันทึกเพื่ออัปโหลดภาพอ้างอิง')})}
 function addThumb(e:Event){fileData(e,s=>project.value.thumbnail=s)}
 function exportProject(){const blob=new Blob([JSON.stringify(project.value,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='story-project.json';a.click();URL.revokeObjectURL(a.href)}
 function importProject(e:Event){fileData(e,()=>{});const file=(e.target as HTMLInputElement).files?.[0];if(!file)return;file.text().then(t=>{try{project.value=JSON.parse(t);selected.value=0;notify('นำเข้าโปรเจกต์แล้ว')}catch{notify('ไฟล์โปรเจกต์ไม่ถูกต้อง')}})}
@@ -65,11 +69,54 @@ async function loadProject(id:string){
 }
 function newProject(){project.value=blank();selected.value=0;selectedProfileId.value='';selectedVoiceId.value='';notify('เริ่มโปรเจกต์ใหม่แล้ว')}
 async function refreshProfiles(){characterProfiles.value=await storyApi.listCharacterProfiles()}
+<<<<<<< HEAD
 async function saveCharacter(){
  const c=project.value.character
  try{const profile=await storyApi.saveCharacterProfile({id:c.id,name:c.name,description:c.look,referenceData:c.reference.startsWith('data:')?c.reference:undefined,referenceUrl:c.referenceUrl,voiceId:c.voiceId||null});
   c.id=profile.id;c.referenceUrl=profile.referenceUrl||undefined;c.reference=profile.referenceUrl||'';selectedProfileId.value=profile.id;await refreshProfiles();notify('บันทึกตัวละครไว้ใช้ซ้ำแล้ว')}
  catch(error){notify(error instanceof Error?error.message:'บันทึกตัวละครไม่สำเร็จ')}
+=======
+async function persistCharacter(showNotice=true):Promise<boolean>{
+ if(savingCharacter.value)return false
+ const c=project.value.character
+ if(!c.name.trim()||!c.look.trim()){notify('กรุณาใส่ชื่อและรูปลักษณ์ตัวละคร');return false}
+ savingCharacter.value=true
+ try{
+  const profile=await storyApi.saveCharacterProfile({
+   id:c.id,name:c.name,description:c.look,
+   referenceData:c.reference.startsWith('data:')?c.reference:undefined,
+   referenceUrl:c.referenceUrl,voiceId:c.voiceId||null,
+  })
+  c.id=profile.id;c.referenceUrl=profile.referenceUrl||undefined
+  c.reference=profile.referenceUrl||''
+  selectedProfileId.value=profile.id
+  await refreshProfiles()
+  if(showNotice)notify(c.referenceUrl?'บันทึกตัวละครและภาพอ้างอิงแล้ว':'บันทึกตัวละครแล้ว (ยังไม่มีภาพอ้างอิง)')
+  return true
+ }catch(error){
+  notify(error instanceof Error?error.message:'บันทึกตัวละครไม่สำเร็จ')
+  return false
+ }finally{savingCharacter.value=false}
+}
+async function saveCharacter(){await persistCharacter()}
+async function applyCharacterToScenes(){
+ if(applyingCharacter.value)return
+ applyingCharacter.value=true
+ try{
+  const c=project.value.character
+  if(!c.reference&&!c.referenceUrl){notify('กรุณาเพิ่มภาพอ้างอิงก่อนใช้ตัวละครกับทุกฉาก');return}
+  if(!await persistCharacter(false)||!c.referenceUrl)return
+  const guide=`${c.name}: ${c.look}.`
+  for(const scene of project.value.scenes){
+   if(!scene.imagePrompt.includes(guide))scene.imagePrompt=`${guide} ${scene.imagePrompt}`
+  }
+  if(project.value.scenes.length){
+   const saved=await saveProject(false)
+   if(!saved){notify('บันทึก Story ไม่สำเร็จ โปรดลองอีกครั้ง');return}
+  }
+  notify('เชื่อมภาพอ้างอิงกับทุกฉากแล้ว — ComfyUI จะใช้ img2img')
+ }finally{applyingCharacter.value=false}
+>>>>>>> origin/main
 }
 function useCharacterProfile(id:string){
  selectedProfileId.value=id
@@ -116,8 +163,8 @@ async function waitForSceneImage(storyId:string,sceneId:string):Promise<void>{
       imageProgress.value='รอตรวจสอบงานเดิมใน ComfyUI'
     }else{
       imageProgress.value=result.status==='running'
-        ? 'ComfyUI กำลังสร้างภาพ'
-        : 'รอคิว ComfyUI หรือรอผลการประมวลผล'
+        ? (result.referenceUsed ? 'ComfyUI กำลังสร้างด้วยภาพอ้างอิง (img2img)' : 'ComfyUI กำลังสร้างจาก Prompt')
+        : (result.referenceUsed ? 'รอคิว ComfyUI (ใช้ภาพอ้างอิง)' : 'รอคิว ComfyUI หรือรอผลการประมวลผล')
     }
     await new Promise(resolve=>setTimeout(resolve,2000))
   }
@@ -164,6 +211,13 @@ async function generateSceneImage(){
   imageProgress.value='กำลังบันทึก Story ลง Backend'
   imageSeconds.value=0
   try{
+<<<<<<< HEAD
+=======
+    if(project.value.character.reference.startsWith('data:')){
+      imageProgress.value='กำลังอัปโหลดภาพตัวละครให้ Backend'
+      if(!await persistCharacter(false))throw new Error('บันทึกภาพอ้างอิงไม่สำเร็จ กรุณาตรวจสอบรูปแล้วลองอีกครั้ง')
+    }
+>>>>>>> origin/main
     const payload=storyPayload()
     const storyId=await storyApi.saveStory(payload,project.value.storyId)
     project.value.storyId=storyId
@@ -184,7 +238,8 @@ async function generateSceneImage(){
       }
     }
     imageProgress.value='กำลังส่งงานไป ComfyUI'
-    await storyApi.startSceneImage(storyId,target.id)
+    const queued=await storyApi.startSceneImage(storyId,target.id)
+    imageProgress.value=queued.referenceUsed?'ส่งภาพอ้างอิงเข้า ComfyUI แล้ว (img2img)':'กำลังสร้างภาพด้วย Prompt (ไม่มีภาพอ้างอิง)'
     await waitForSceneImage(storyId,target.id)
   }catch(error){
     imageError.value=error instanceof Error?error.message:'ไม่สามารถสร้างภาพ AI ได้'
@@ -203,9 +258,15 @@ async function generateSceneImage(){
    <div class="phase-strip"><button v-for="n in 4" :key="n" :class="['phase-pill',{chosen:activePhase===n,done:n<activePhase}]" @click="activePhase=n"><span class="phase-num">{{n<activePhase?'✓':'0'+n}}</span><span><b>{{['สร้างเรื่องและภาพ','เสียงและวิดีโอ','ตัวละครคงที่','เตรียมลง YouTube'][n-1]}}</b><small>{{['STORYBOARD','VOICE & VIDEO','CHARACTER','PUBLISH'][n-1]}}</small></span><span v-if="n<4" class="phase-arrow">→</span></button></div>
    <section v-if="activePhase===1" class="content-grid"><div class="left-col"><div class="panel prompt-panel"><div class="panel-head"><div><span class="step-tag">PHASE 01 / STORY</span><h2>เล่าไอเดียของคุณ</h2></div><span class="spark">✦</span></div><textarea v-model="project.prompt" placeholder="ตัวอย่าง: เด็กสาวนักเวทถูกขับไล่ออกจากอาณาจักร ก่อนจะค้นพบว่าตัวเองมีพลังของจอมมาร…"></textarea><div class="settings-row"><label>แนวเรื่อง<select v-model="project.genre"><option>Anime Fantasy</option><option>นิทานผจญภัย</option><option>ไซไฟ</option><option>ดราม่า</option><option>สารคดี</option></select></label><label>ภาษา<select v-model="project.language"><option>ไทย</option><option>English</option></select></label><label>สัดส่วน<select v-model="project.ratio"><option>9:16</option><option>16:9</option><option>1:1</option></select></label></div><button class="button primary generate" :disabled="busy" @click="generateStoryboard">✦ {{busy?'กำลังสร้าง…':'สร้างสตอรี่บอร์ด'}} <span>→</span></button><div class="hint">ระบบจะร่างเรื่องและแบ่งเป็นฉากให้คุณตรวจทานก่อนสร้างภาพ</div></div>
     <div class="panel scenes-panel"><div class="panel-head"><div><span class="step-tag">YOUR STORY</span><h2>สตอรี่บอร์ด <span class="count">{{project.scenes.length}} ฉาก</span></h2></div><button class="text-btn" @click="addScene">＋ เพิ่มฉาก</button></div><div v-if="!project.scenes.length" class="empty-state"><div class="empty-icon">▧</div><b>เรื่องราวของคุณจะเริ่มตรงนี้</b><span>ใส่ Prompt แล้วกดสร้างสตอรี่บอร์ด</span></div><div v-else class="scene-list"><button v-for="(s,i) in project.scenes" :key="s.id" :class="['scene-row',{selected:selected===i}]" @click="selected=i"><span class="scene-index">{{String(i+1).padStart(2,'0')}}</span><span class="scene-thumb" :style="(s.image||s.imageUrl)?{backgroundImage:`url(${s.image||s.imageUrl})`}:{}">{{(s.image||s.imageUrl)?'':'✦'}}</span><span class="scene-copy"><b>{{s.title||'ฉากใหม่'}}</b><small>{{s.narration||'เพิ่มบทบรรยายของฉากนี้'}}</small></span><span class="duration">{{s.duration}}s</span><span class="reorder"><i @click.stop="move(i,-1)">↑</i><i @click.stop="move(i,1)">↓</i></span></button></div></div></div>
+<<<<<<< HEAD
     <div class="right-col"><div class="panel preview-panel"><div class="panel-head"><div><span class="step-tag">SCENE PREVIEW</span><h2>ภาพของฉาก</h2></div><button class="icon-btn" @click="notify('เลือกภาพที่ต้องการใช้กับฉากนี้')">···</button></div><div class="preview-frame" :class="project.ratio==='16:9'?'wide':''" :style="(current?.image||current?.imageUrl)?{backgroundImage:`url(${current.image||current.imageUrl})`}:{}"><template v-if="!(current?.image||current?.imageUrl)"><div class="preview-glow"></div><div class="mountain m1"></div><div class="mountain m2"></div><div class="preview-caption"><span>SCENE {{String(selected+1).padStart(2,'0')}}</span><b>{{current?.title||'ภาพจะปรากฏที่นี่'}}</b></div></template><span class="ratio-badge">{{project.ratio}}</span></div><div class="preview-controls"><label class="button outline">↑ อัปโหลดภาพ<input hidden type="file" accept="image/*" @change="addImage"></label><button class="button outline" :disabled="!current || generatingSceneId!==null" @click="generateSceneImage">{{generatingSceneId!==null ? 'กำลังสร้างภาพ AI…' : '✦ สร้างภาพ AI'}}</button></div><div v-if="generatingSceneId" class="hint" role="status">{{imageProgress}} · {{imageSeconds}} วินาที</div><div v-if="imageError" class="hint" role="alert">{{imageError}}</div><div v-if="current" class="scene-fields"><label>บทบรรยาย<textarea v-model="current.narration" rows="3" placeholder="เขียนบทบรรยายฉากนี้"></textarea></label><label>Prompt สำหรับภาพ<textarea v-model="current.imagePrompt" rows="3" placeholder="รายละเอียดภาพ มุมกล้อง แสง และบรรยากาศ"></textarea></label><div class="inline-fields"><label>เวลา (วินาที)<input type="number" min="1" max="60" v-model.number="current.duration"></label><label>การเคลื่อนภาพ<select v-model="current.motion"><option>ซูมเข้า</option><option>ซูมออก</option><option>แพนซ้าย</option><option>แพนขวา</option><option>นิ่ง</option></select></label></div></div><div v-else class="preview-note">เลือกหรือสร้างฉากเพื่อแก้ไขรายละเอียด</div></div><div class="tip-card"><span>✦</span><div><b>เคล็ดลับภาพที่เล่าเรื่อง</b><p>เขียนอารมณ์ แสง และมุมกล้องใน prompt เพื่อให้แต่ละฉากต่อเนื่องกัน</p></div></div></div></section>
    <section v-else-if="activePhase===2" class="phase-page"><div class="page-title"><span class="step-tag">PHASE 02 / PRODUCTION</span><h2>เติมเสียง แล้วประกอบเป็นวิดีโอ</h2><p>สร้างเสียงพากย์จาก MOSS Voice Studio ด้วย voice profile ที่บันทึกไว้</p></div><div class="production-grid"><div class="panel"><h3>เสียงพากย์ · MOSS</h3><p>เสียงที่สร้างจะถูกบันทึกในแต่ละฉากและใช้ต่อในการเรนเดอร์</p><label>โปรไฟล์เสียง<select v-model="selectedVoiceId"><option value="">เสียงเริ่มต้นของ MOSS</option><option v-for="voice in mossVoices" :key="voice.id" :value="voice.id">{{voice.name}} · {{voice.language}}</option></select></label><textarea :value="project.scenes.map(s=>s.narration).join('\n\n')" @input="project.voice=($event.target as HTMLTextAreaElement).value" placeholder="บทพากย์จะรวมจากฉากของคุณ"></textarea><div class="preview-controls"><button class="button primary" :disabled="voiceBusy||!mossVoices.length" @click="generateNarration">{{voiceBusy?'กำลังสร้างเสียง…':'✦ สร้างเสียงทุกฉาก'}}</button></div><div v-for="s in project.scenes" :key="s.id" class="voice-result"><b>{{s.title}}</b><audio v-if="s.audioUrl" :src="s.audioUrl" controls></audio></div><div v-if="!mossVoices.length" class="hint">ตรวจการเชื่อมต่อ MOSS_API_URL และ MOSS_API_KEY ใน api/.env และเปิด MOSS ที่พอร์ต 8001</div></div><div class="panel"><h3>ซับไตเติลและวิดีโอ</h3><p>ประกอบภาพ เสียง ซับไตเติล และการเคลื่อนภาพเป็นไฟล์พร้อมตรวจ</p><div class="export-preview"><span>MP4</span><b>{{project.scenes.length}} ฉาก</b><small>{{project.scenes.reduce((a,s)=>a+Number(s.duration||0),0)}} วินาทีโดยประมาณ · {{project.ratio}}</small></div><div class="preview-controls"><button class="button outline" @click="notify('สร้าง SRT พร้อมกับการเรนเดอร์วิดีโอ')">สร้างซับไตเติล</button><button class="button primary" @click="notify('ต้องเปิดใช้งาน video renderer ก่อนส่งออก MP4')">เรนเดอร์วิดีโอ →</button></div></div></div></section>
    <section v-else-if="activePhase===3" class="phase-page"><div class="page-title"><span class="step-tag">PHASE 03 / CONTINUITY</span><h2>ทำให้ตัวละครเป็นคนเดิมทุกฉาก</h2><p>บันทึกโปรไฟล์ไว้ใช้ซ้ำ ภาพอ้างอิงจะช่วยคุมลักษณะผ่าน img2img ใน ComfyUI</p></div><div class="panel character-panel"><div><label>โปรไฟล์ตัวละคร<select :value="selectedProfileId" @change="useCharacterProfile(($event.target as HTMLSelectElement).value)"><option value="">ตัวละครใหม่</option><option v-for="profile in characterProfiles" :key="profile.id" :value="profile.id">{{profile.name}}</option></select></label><div class="character-upload" :style="project.character.reference?{backgroundImage:`url(${project.character.reference})`}:{ }"><label>＋<small>เพิ่มภาพอ้างอิง<input hidden type="file" accept="image/png,image/jpeg" @change="addCharacter"></small></label></div></div><div class="character-fields"><label>ชื่อตัวละคร<input v-model="project.character.name" placeholder="เช่น ลูน่า"></label><label>รูปลักษณ์ที่ต้องคงเดิม<textarea v-model="project.character.look" rows="5" placeholder="ผมสีเงินยาว ดวงตาสีฟ้า เสื้อคลุมสีดำ มีเครื่องรางรูปพระจันทร์"></textarea></label><label>voice profile ของตัวละคร<select v-model="project.character.voiceId"><option :value="null">ใช้โปรไฟล์เสียงจากหน้าเสียง</option><option v-for="voice in mossVoices" :key="voice.id" :value="voice.id">{{voice.name}} · {{voice.language}}</option></select></label><div class="continuity-note">✦ คำบรรยายตัวละครจะถูกเพิ่มใน prompt ทุกฉาก ภาพอ้างอิงจะใช้เป็นภาพตั้งต้น denoise ต่ำ</div><div class="preview-controls"><button class="button primary" @click="saveCharacter">บันทึกตัวละครไว้ใช้ซ้ำ</button><button class="button outline" @click="project.scenes.forEach(s=>s.imagePrompt=`${project.character.name}: ${project.character.look}. ${s.imagePrompt}`);notify('เพิ่มรายละเอียดตัวละครลงใน prompt ของทุกฉากแล้ว')">ใช้กับทุกฉาก →</button></div></div></div></section>
+=======
+    <div class="right-col"><div class="panel preview-panel"><div class="panel-head"><div><span class="step-tag">SCENE PREVIEW</span><h2>ภาพของฉาก</h2></div><button class="icon-btn" @click="notify('เลือกภาพที่ต้องการใช้กับฉากนี้')">···</button></div><div class="preview-frame" :class="project.ratio==='16:9'?'wide':''" :style="(current?.image||current?.imageUrl)?{backgroundImage:`url(${current.image||current.imageUrl})`}:{}"><template v-if="!(current?.image||current?.imageUrl)"><div class="preview-glow"></div><div class="mountain m1"></div><div class="mountain m2"></div><div class="preview-caption"><span>SCENE {{String(selected+1).padStart(2,'0')}}</span><b>{{current?.title||'ภาพจะปรากฏที่นี่'}}</b></div></template><span class="ratio-badge">{{project.ratio}}</span></div><div class="preview-controls"><label class="button outline">↑ อัปโหลดภาพ<input hidden type="file" accept="image/*" @change="addImage"></label><button class="button outline" :disabled="!current || generatingSceneId!==null" @click="generateSceneImage">{{generatingSceneId!==null ? 'กำลังสร้างภาพ AI…' : '✦ สร้างภาพ AI'}}</button></div><div v-if="generatingSceneId" class="hint" role="status">{{imageProgress}} · {{imageSeconds}} วินาที</div><div v-if="project.character.referenceUrl" class="hint" role="note">ภาพอ้างอิงที่บันทึก: {{project.character.name || 'ตัวละคร'}} — สร้างด้วย img2img (ภาพต้องอยู่ใน API Storage)</div><div v-else-if="project.character.reference.startsWith('data:')" class="hint" role="note">รูปตัวละครยังไม่ได้บันทึก — ระบบจะอัปโหลดก่อนสร้างภาพ</div><div v-if="imageError" class="hint" role="alert">{{imageError}}</div><div v-if="current" class="scene-fields"><label>บทบรรยาย<textarea v-model="current.narration" rows="3" placeholder="เขียนบทบรรยายฉากนี้"></textarea></label><label>Prompt สำหรับภาพ<textarea v-model="current.imagePrompt" rows="3" placeholder="รายละเอียดภาพ มุมกล้อง แสง และบรรยากาศ"></textarea></label><div class="inline-fields"><label>เวลา (วินาที)<input type="number" min="1" max="60" v-model.number="current.duration"></label><label>การเคลื่อนภาพ<select v-model="current.motion"><option>ซูมเข้า</option><option>ซูมออก</option><option>แพนซ้าย</option><option>แพนขวา</option><option>นิ่ง</option></select></label></div></div><div v-else class="preview-note">เลือกหรือสร้างฉากเพื่อแก้ไขรายละเอียด</div></div><div class="tip-card"><span>✦</span><div><b>เคล็ดลับภาพที่เล่าเรื่อง</b><p>เขียนอารมณ์ แสง และมุมกล้องใน prompt เพื่อให้แต่ละฉากต่อเนื่องกัน</p></div></div></div></section>
+   <section v-else-if="activePhase===2" class="phase-page"><div class="page-title"><span class="step-tag">PHASE 02 / PRODUCTION</span><h2>เติมเสียง แล้วประกอบเป็นวิดีโอ</h2><p>สร้างเสียงพากย์จาก MOSS Voice Studio ด้วย voice profile ที่บันทึกไว้</p></div><div class="production-grid"><div class="panel"><h3>เสียงพากย์ · MOSS</h3><p>เสียงที่สร้างจะถูกบันทึกในแต่ละฉากและใช้ต่อในการเรนเดอร์</p><label>โปรไฟล์เสียง<select v-model="selectedVoiceId"><option value="">เสียงเริ่มต้นของ MOSS</option><option v-for="voice in mossVoices" :key="voice.id" :value="voice.id">{{voice.name}} · {{voice.language}}</option></select></label><textarea :value="project.scenes.map(s=>s.narration).join('\n\n')" @input="project.voice=($event.target as HTMLTextAreaElement).value" placeholder="บทพากย์จะรวมจากฉากของคุณ"></textarea><div class="preview-controls"><button class="button primary" :disabled="voiceBusy||!mossVoices.length" @click="generateNarration">{{voiceBusy?'กำลังสร้างเสียง…':'✦ สร้างเสียงทุกฉาก'}}</button></div><div v-for="s in project.scenes" :key="s.id" class="voice-result"><b>{{s.title}}</b><audio v-if="s.audioUrl" :src="s.audioUrl" controls></audio></div><div v-if="!mossVoices.length" class="hint">ตรวจการเชื่อมต่อ MOSS_API_URL และ MOSS_API_KEY ใน api/.env และเปิด MOSS ที่พอร์ต 8001</div></div><div class="panel"><h3>ซับไตเติลและวิดีโอ</h3><p>ประกอบภาพ เสียง ซับไตเติล และการเคลื่อนภาพเป็นไฟล์พร้อมตรวจ</p><div class="export-preview"><span>MP4</span><b>{{project.scenes.length}} ฉาก</b><small>{{project.scenes.reduce((a,s)=>a+Number(s.duration||0),0)}} วินาทีโดยประมาณ · {{project.ratio}}</small></div><div class="preview-controls"><button class="button outline" @click="notify('สร้าง SRT พร้อมกับการเรนเดอร์วิดีโอ')">สร้างซับไตเติล</button><button class="button primary" @click="notify('ต้องเปิดใช้งาน video renderer ก่อนส่งออก MP4')">เรนเดอร์วิดีโอ →</button></div></div></div></section>
+   <section v-else-if="activePhase===3" class="phase-page"><div class="page-title"><span class="step-tag">PHASE 03 / CONTINUITY</span><h2>ทำให้ตัวละครเป็นคนเดิมทุกฉาก</h2><p>บันทึกโปรไฟล์ไว้ใช้ซ้ำ ภาพอ้างอิงจะช่วยคุมลักษณะผ่าน img2img ใน ComfyUI</p></div><div class="panel character-panel"><div><label>โปรไฟล์ตัวละคร<select :value="selectedProfileId" @change="useCharacterProfile(($event.target as HTMLSelectElement).value)"><option value="">ตัวละครใหม่</option><option v-for="profile in characterProfiles" :key="profile.id" :value="profile.id">{{profile.name}}</option></select></label><div class="character-upload" :style="project.character.reference?{backgroundImage:`url(${project.character.reference})`}:{ }"><label>＋<small>เพิ่มภาพอ้างอิง<input hidden type="file" accept="image/png,image/jpeg" @change="addCharacter"></small></label></div></div><div class="character-fields"><label>ชื่อตัวละคร<input v-model="project.character.name" placeholder="เช่น ลูน่า"></label><label>รูปลักษณ์ที่ต้องคงเดิม<textarea v-model="project.character.look" rows="5" placeholder="ผมสีเงินยาว ดวงตาสีฟ้า เสื้อคลุมสีดำ มีเครื่องรางรูปพระจันทร์"></textarea></label><label>voice profile ของตัวละคร<select v-model="project.character.voiceId"><option :value="null">ใช้โปรไฟล์เสียงจากหน้าเสียง</option><option v-for="voice in mossVoices" :key="voice.id" :value="voice.id">{{voice.name}} · {{voice.language}}</option></select></label><div class="continuity-note">✦ คำบรรยายตัวละครจะถูกเพิ่มใน prompt ทุกฉาก ภาพอ้างอิงจะถูกอัปโหลดและใช้กับ ComfyUI img2img จริงเมื่อบันทึกตัวละครแล้ว (ควรตรวจสอบรูปก่อนสร้างภาพ)</div><div class="preview-controls"><button class="button primary" :disabled="savingCharacter || applyingCharacter" @click="saveCharacter">{{savingCharacter?'กำลังบันทึกภาพ…':'บันทึกตัวละครไว้ใช้ซ้ำ'}}</button><button class="button outline" :disabled="savingCharacter || applyingCharacter" @click="applyCharacterToScenes">{{applyingCharacter?'กำลังเชื่อมภาพ…':'ใช้กับทุกฉาก →'}}</button></div></div></div></section>
+>>>>>>> origin/main
    <section v-else class="phase-page"><div class="page-title"><span class="step-tag">PHASE 04 / YOUTUBE</span><h2>พร้อมให้คนดูเห็นเรื่องของคุณ</h2><p>เตรียมข้อมูลวิดีโอและตรวจทานทุกไฟล์ก่อนเชื่อมต่อ YouTube</p></div><div class="production-grid"><div class="panel"><h3>ข้อมูลวิดีโอ</h3><label>ชื่อคลิป<input v-model="project.metadata.title" placeholder="ชื่อที่ชวนให้ติดตาม"></label><label>คำอธิบาย<textarea v-model="project.metadata.description" rows="5" placeholder="เล่าเรื่องย่อ ใส่เครดิต และข้อมูลที่ต้องการ"></textarea></label><label>แท็ก<input v-model="project.metadata.tags" placeholder="แฟนตาซี, เรื่องเล่า, anime"></label><div class="preview-controls"><button class="button outline" @click="project.metadata.title=project.title;project.metadata.description=project.prompt;notify('เตรียมข้อมูลจากโปรเจกต์แล้ว')">สร้าง metadata จากเรื่อง</button></div></div><div class="panel"><h3>ภาพปกและตรวจทาน</h3><div class="thumbnail-box" :style="project.thumbnail?{backgroundImage:`url(${project.thumbnail})`}:{}"><label v-if="!project.thumbnail">＋ เพิ่มภาพปก<input hidden type="file" accept="image/*" @change="addThumb"></label></div><label class="check-row"><input type="checkbox"> ยืนยันว่าตรวจทานวิดีโอและข้อมูลแล้ว</label><button class="button primary full" @click="notify('ตั้งค่า YouTube OAuth ใน API ก่อนเชื่อมต่อบัญชี')">เชื่อมต่อและอัปโหลดไป YouTube ↗</button><small class="hint">การอัปโหลดต้องตั้งค่า OAuth และต้องกดยืนยันก่อนทุกครั้ง</small></div></div></section>
    <footer class="footer"><span>STORYFRAME <b>·</b> สร้างจากจินตนาการของคุณ</span><span>บันทึกในเครื่องนี้ · ใช้ปุ่มบันทึกเพื่อเก็บโปรเจกต์</span></footer>
   </main><div v-if="toast" class="toast">{{toast}}</div>
