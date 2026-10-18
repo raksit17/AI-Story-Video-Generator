@@ -137,7 +137,7 @@ export class StoriesService {
     return this.read(id);
   }
 
-  async save(input: Record<string, unknown>, id = randomUUID()) {
+  async save(input: Record<string, unknown>, id: string = randomUUID()) {
     if (!/^[0-9a-f-]{36}$/i.test(id)) throw new BadRequestException("Invalid story ID");
     await mkdir(this.root, { recursive: true });
     const storyInput = structuredClone(input) as Record<string, any>;
@@ -196,6 +196,7 @@ export class StoriesService {
     let graph: any;
     try { graph = JSON.parse(await readFile(workflowPath, "utf8")); }
     catch { throw new ServiceUnavailableException("ComfyUI workflow is missing"); }
+    graph["4"].inputs.ckpt_name = process.env.COMFYUI_CHECKPOINT ?? "sd_xl_base_1.0.safetensors";
     graph["3"].inputs.seed = Math.floor(Math.random() * 2_147_000_000);
     graph["6"].inputs.text = `${imagePrompt}, cinematic illustration, consistent story character design`;
     graph["7"].inputs.text = "text, watermark, logo, blurry, deformed, low quality";
@@ -225,7 +226,17 @@ export class StoriesService {
     const fileId = randomUUID();
     const filePath = join(this.root, `${fileId}.png`);
     await writeFile(filePath, Buffer.from(await fileResponse.arrayBuffer()));
-    return { id: fileId, url: `/api/v1/stories/assets/${fileId}.png` };
+    const imageUrl = `/api/v1/stories/assets/${fileId}.png`;
+    // Persist scene.imageUrl on the latest saved story for later video rendering.
+    const latestStory = await this.get(storyId);
+    const targetScene = (latestStory?.scenes as Array<Record<string, unknown>> | undefined)
+      ?.find((scene) => scene.id === sceneId);
+    if (!latestStory || !targetScene) {
+      throw new BadRequestException("Story or scene removed during image generation");
+    }
+    targetScene.imageUrl = imageUrl;
+    await this.save(latestStory, latestStory.id);
+    return { id: fileId, url: imageUrl };
   }
 
   async generateVoice(story: Story, sceneId: string, requestedVoice?: string) {
