@@ -7,6 +7,7 @@ let wrapper: VueWrapper | undefined;
 let requests: Array<{ url: string; options: RequestInit }>;
 const imageUrl = "/api/v1/stories/assets/00000000-0000-0000-0000-000000000001.png";
 let statusChecks: number;
+let generations: number;
 
 function reply(body: unknown, status = 200): Promise<Response> {
   return Promise.resolve(new Response(JSON.stringify(body), {
@@ -18,6 +19,7 @@ beforeEach(() => {
   localStorage.clear();
   requests = [];
   statusChecks = 0;
+  generations = 0;
   let uuid = 0;
   vi.stubGlobal("crypto", { randomUUID: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}` });
   vi.stubGlobal("fetch", vi.fn((url: string, options: RequestInit = {}) => {
@@ -45,17 +47,16 @@ beforeEach(() => {
       provider: "ollama",
     });
     if (url.endsWith("/stories") && options.method === "POST") return reply({ id: "saved-story" }, 201);
+    if (url.endsWith("/stories/saved-story") && options.method === "PUT") return reply({ id: "saved-story" });
     if (url.endsWith("/image") && options.method === "POST") {
-      return reply({ status: "queued", promptId: "comfy-prompt" }, 201);
+      generations++;
+      return reply({ status: "queued", promptId: "comfy-prompt", referenceMode: "none" }, 201);
     }
     if (url.endsWith("/image/status")) {
       if (url.includes("/old-scene/")) return reply({ status: "completed", url: imageUrl });
       statusChecks++;
-      // The initial status check finds no existing result, then the next
-      // check after POST receives the completed PNG from ComfyUI history.
-      return reply(statusChecks === 1
-        ? { status: "idle" }
-        : { status: "completed", url: imageUrl });
+      const resultUrl = generations < 2 ? imageUrl : imageUrl.replace(".png", "-new.png");
+      return reply({ status: "completed", url: resultUrl });
     }
     throw new Error(`Unexpected request: ${url}`);
   }));
@@ -84,7 +85,6 @@ describe("Storyframe project and ComfyUI image workflow", () => {
       "/api/v1/stories/voice-profiles",
       "/api/v1/stories/storyboard",
       "/api/v1/stories",
-      "/api/v1/stories/saved-story/scenes/00000000-0000-4000-8000-000000000001/image/status",
       "/api/v1/stories/saved-story/scenes/00000000-0000-4000-8000-000000000001/image",
       "/api/v1/stories/saved-story/scenes/00000000-0000-4000-8000-000000000001/image/status",
     ]);
@@ -92,6 +92,23 @@ describe("Storyframe project and ComfyUI image workflow", () => {
     const project = JSON.parse(localStorage.getItem("storyframe-project-v1")!);
     expect(project.storyId).toBe("saved-story");
     expect(project.scenes[0].imageUrl).toBe(imageUrl);
+  });
+
+  it("explicitly generates a fresh image even when scene already has a saved image", async () => {
+    wrapper = mount(App);
+    await wrapper.get(".prompt-panel textarea").setValue("ลูน่าพบประตูมิติในห้องทำงาน");
+    await wrapper.get(".generate").trigger("click");
+    await flushPromises();
+    const button = wrapper.get(".preview-controls button");
+    await button.trigger("click");
+    await flushPromises();
+    expect(generations).toBe(1);
+    expect(wrapper.get(".preview-frame").attributes("style")).toContain(imageUrl);
+    await button.trigger("click");
+    await flushPromises();
+    expect(generations).toBe(2);
+    expect(wrapper.get(".preview-frame").attributes("style")).toContain("-new.png");
+    expect(requests.filter(r => r.url.endsWith("/image/status"))).toHaveLength(2);
   });
 
   it("restores an old completed ComfyUI image when reopening a saved story", async () => {
