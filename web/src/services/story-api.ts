@@ -31,7 +31,7 @@ export class StoryApiError extends Error {
 }
 
 export function createStoryApi(
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch = (input, init) => fetch(input, init),
   baseUrl: string = import.meta.env.VITE_API_BASE_URL || '/api/v1',
 ) {
   const base = baseUrl.replace(/\/$/, '');
