@@ -17,6 +17,13 @@ export interface StoryPayload {
   }>;
 }
 
+export interface SceneImageStatus {
+  status: 'idle' | 'queued' | 'running' | 'completed' | 'failed';
+  promptId?: string;
+  url?: string;
+  error?: string;
+}
+
 export class StoryApiError extends Error {
   constructor(message: string, public readonly status: number) {
     super(message);
@@ -66,18 +73,21 @@ export function createStoryApi(
     }
   }
 
-  async function generateSceneImage(storyId: string, sceneId: string): Promise<string> {
-    const result = await requestJson<{ url: string }>(
+  async function startSceneImage(storyId: string, sceneId: string): Promise<SceneImageStatus> {
+    return requestJson<SceneImageStatus>(
       `/stories/${encodeURIComponent(storyId)}/scenes/${encodeURIComponent(sceneId)}/image`,
       { method: 'POST' },
     );
-    if (typeof result.url !== 'string' || !result.url.startsWith('/api/v1/stories/assets/')) {
-      throw new Error('API returned an invalid image URL');
-    }
-    return result.url;
   }
 
-  return { saveStory, generateSceneImage };
+  async function getSceneImageStatus(storyId: string, sceneId: string): Promise<SceneImageStatus> {
+    return requestJson<SceneImageStatus>(
+      `/stories/${encodeURIComponent(storyId)}/scenes/${encodeURIComponent(sceneId)}/image/status`,
+      { method: 'GET' },
+    );
+  }
+
+  return { saveStory, startSceneImage, getSceneImageStatus };
 }
 
 export const storyApi = createStoryApi();
