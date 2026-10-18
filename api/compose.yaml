@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: thumbnail
+      POSTGRES_USER: thumbnail
+      POSTGRES_PASSWORD: ${THUMBNAIL_DB_PASSWORD:-local-thumbnail-dev}
+    volumes:
+      - thumbnail_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U thumbnail -d thumbnail"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:3002:3002"
+    environment:
+      DATABASE_URL: postgresql://thumbnail:${THUMBNAIL_DB_PASSWORD:-local-thumbnail-dev}@db:5432/thumbnail
+      VIDEO_CATALOG_MODE: local
+      REMOVAL_WORKER_URL: ${REMOVAL_WORKER_URL:-http://worker:8001}
+      REMOVAL_WORKER_KEY: ${REMOVAL_WORKER_KEY:-}
+      REMOVAL_TIMEOUT_MS: ${REMOVAL_TIMEOUT_MS:-180000}
+      COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:8188}
+      COMFYUI_CHECKPOINT: ${COMFYUI_CHECKPOINT:-sd_xl_base_1.0.safetensors}
+      COMFYUI_JOB_TIMEOUT_MS: ${COMFYUI_JOB_TIMEOUT_MS:-900000}
+      AI_QUEUE_ENABLED: ${AI_QUEUE_ENABLED:-true}
+      HOST: 0.0.0.0
+      PORT: 3002
+      API_KEY: ${API_KEY:?Set API_KEY in .env before starting Docker}
+      VIDEO_SOURCE_DIR: /sources
+      STORAGE_DIR: /app/storage
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    volumes:
+      - ./storage/sources:/sources:ro
+      - thumbnail_assets:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["sh", "-c", "npm run db:migrate && npm start"]
+volumes:
+  thumbnail_db:
+  thumbnail_assets:

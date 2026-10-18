@@ -1,0 +1,21 @@
+# docker compose -f compose.yaml -f compose.phase2.yaml up --build
+# Place youtube-thumbnail-ai next to youtube-thumbnail-api.
+services:
+  api:
+    environment:
+      REMOVAL_WORKER_URL: http://worker:8001
+    depends_on:
+      worker:
+        condition: service_started
+  worker:
+    build: ../youtube-thumbnail-ai
+    environment:
+      DEVICE: cpu
+      U2NET_HOME: /models
+      OMP_NUM_THREADS: 4
+      WORKER_API_KEY: ${REMOVAL_WORKER_KEY:?Set REMOVAL_WORKER_KEY in .env}
+    volumes:
+      - thumbnail_models:/models
+    restart: unless-stopped
+volumes:
+  thumbnail_models:
