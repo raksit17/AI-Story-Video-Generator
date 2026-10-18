@@ -41,7 +41,7 @@ beforeEach(() => {
       });
     }
     if (url.endsWith("/stories/scene-visual")) return reply({
-      imagePrompt: "Luna startled as a bright blue magical portal opens behind her at the office, anime medium shot",
+      imagePrompt: "Luna startled as a glowing blue magical portal opens behind her at the office, anime medium shot",
       provider: "ollama",
     });
     if (url.endsWith("/stories") && options.method === "POST") return reply({ id: "saved-story" }, 201);
