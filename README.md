@@ -16,6 +16,7 @@
 - [Web](web/README.md)
 - [API](api/README.md)
 - [ComfyUI](comfyui/README.md)
+- [Projects, character continuity, and MOSS voices](docs/STORY_PROJECTS_VOICES.md)
 
 โปรเจกต์ต้นทางทั้งสามถูกเก็บไว้ในแต่ละโฟลเดอร์เพื่อให้ตรวจสอบและต่อยอดได้ ไฟล์แนบเป็นแนวคิดอ้างอิง ส่วนขอบเขตของงานยึดตามคำขอของผู้ใช้: ทำวิดีโอจากภาพและเนื้อเรื่องให้ครบถึง Phase 4
 

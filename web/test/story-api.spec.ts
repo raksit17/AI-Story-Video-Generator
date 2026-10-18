@@ -57,6 +57,39 @@ describe('Storyframe image API flow', () => {
     expect(fetcher.mock.calls[0][1].method).toBe('PUT');
   });
 
+  it('lists and loads saved projects and reusable profile catalogs', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(ok({ items: [{ id: 'story-one', title: 'Luna', updatedAt: 'today' }] }))
+      .mockResolvedValueOnce(ok({ id: 'story-one', title: 'Luna', scenes: [] }))
+      .mockResolvedValueOnce(ok({ items: [{ id: 'character-one', name: 'Luna', description: 'Silver hair' }] }))
+      .mockResolvedValueOnce(ok({ items: [{ id: 'voice-one', name: 'Luna voice', language: 'Thai' }] }));
+    const api = createStoryApi(fetcher as unknown as typeof fetch);
+    expect((await api.listStories())[0].id).toBe('story-one');
+    expect((await api.getStory('story-one')).title).toBe('Luna');
+    expect((await api.listCharacterProfiles())[0].name).toBe('Luna');
+    expect((await api.listVoices())[0].id).toBe('voice-one');
+    expect(fetcher.mock.calls.map(call => call[0])).toEqual([
+      '/api/v1/stories', '/api/v1/stories/story-one',
+      '/api/v1/stories/character-profiles', '/api/v1/stories/voice-profiles',
+    ]);
+  });
+
+  it('saves a character profile and starts/polls a MOSS narration job', async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(ok({ id: 'character-one', name: 'Luna' }))
+      .mockResolvedValueOnce(ok({ id: 'moss-job', status: 'queued' }))
+      .mockResolvedValueOnce(ok({ status: 'completed', url: '/api/v1/stories/assets/audio.wav' }));
+    const api = createStoryApi(fetcher as unknown as typeof fetch);
+    await api.saveCharacterProfile({ name: 'Luna', description: 'Silver hair', referenceData: 'data:image/png;base64,iVBORw0KGgo=' });
+    const job = await api.startSceneVoice('story-one', 'scene-one', 'voice-one');
+    const result = await api.getSceneVoiceStatus('story-one', 'scene-one');
+    expect(job.status).toBe('queued');
+    expect(result.url).toContain('.wav');
+    expect(fetcher.mock.calls[0][0]).toBe('/api/v1/stories/character-profiles');
+    expect(JSON.parse(fetcher.mock.calls[0][1].body).referenceData).toContain('base64');
+    expect(JSON.parse(fetcher.mock.calls[1][1].body).voiceId).toBe('voice-one');
+  });
+
   it('recovers when browser storage points to a deleted backend story', async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(failed(404, 'Story not found'))

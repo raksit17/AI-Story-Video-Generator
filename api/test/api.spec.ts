@@ -49,6 +49,7 @@ describe("Thumbnail HTTP API + real FFmpeg", () => {
     process.env.VIDEO_CATALOG_MODE = "local";
     process.env.VIDEO_SOURCE_DIR = join(dir, "sources");
     process.env.STORAGE_DIR = join(dir, "storage");
+    process.env.STORY_STORAGE_DIR = join(dir, "stories");
     process.env.API_KEY = "test-secret";
     process.env.HOST = "127.0.0.1";
     const memory = newDb();
@@ -110,6 +111,38 @@ describe("Thumbnail HTTP API + real FFmpeg", () => {
     expect(res.headers["access-control-allow-origin"]).toBe(
       "http://localhost:5173",
     );
+  });
+  test("save, list, reload and update multiple persistent story projects", async () => {
+    const first = await post("/stories")
+      .send({ title: "เรื่องแรก", prompt: "A story", scenes: [{ id: "scene-a", title: "เปิดเรื่อง" }] })
+      .expect(201);
+    const second = await post("/stories")
+      .send({ title: "เรื่องที่สอง", prompt: "Another story", scenes: [] })
+      .expect(201);
+    expect(first.body.id).not.toBe(second.body.id);
+    expect((await get("/stories")).body.items).toHaveLength(2);
+    expect((await get(`/stories/${first.body.id}`)).body.scenes[0].title).toBe("เปิดเรื่อง");
+    await request(app.getHttpServer())
+      .put(`/api/v1/stories/${first.body.id}`)
+      .set("X-API-Key", "test-secret")
+      .send({ title: "แก้ไขแล้ว", scenes: [] })
+      .expect(200);
+    expect((await get(`/stories/${first.body.id}`)).body.title).toBe("แก้ไขแล้ว");
+  });
+  test("save reusable character profiles with image references and proxy MOSS voice profiles", async () => {
+    const saved = await post("/stories/character-profiles")
+      .send({ name: "ลูน่า", description: "ผมสีเงิน ดวงตาสีฟ้า", referenceData: "data:image/png;base64,iVBORw0KGgo=", voiceId: "voice-luna" })
+      .expect(201);
+    expect(saved.body.referenceUrl).toContain("/stories/assets/");
+    expect((await get("/stories/character-profiles")).body.items[0].id).toBe(saved.body.id);
+    const fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ items: [{ id: "voice-luna", name: "Luna", language: "Thai" }] }), { status: 200 }),
+    );
+    try {
+      expect((await get("/stories/voice-profiles")).body.items[0].id).toBe("voice-luna");
+      expect(fetchSpy.mock.calls[0][0]).toBe("http://127.0.0.1:8001/v1/voices");
+      expect(new Headers(fetchSpy.mock.calls[0][1]?.headers).get("X-API-Key")).toBe("local-dev-key");
+    } finally { fetchSpy.mockRestore(); }
   });
   test("register, list and retrieve videos", async () => {
     const res = await post("/videos")

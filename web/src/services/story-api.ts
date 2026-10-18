@@ -24,6 +24,11 @@ export interface SceneImageStatus {
   error?: string;
 }
 
+export interface ProjectSummary { id: string; title: string; updatedAt: string }
+export interface CharacterProfile { id: string; name: string; description: string; referenceUrl: string | null; voiceId: string | null; updatedAt: string }
+export interface MossVoice { id: string; name: string; language: 'Thai' | 'English'; character?: string; created_at: string }
+export interface SceneVoiceStatus { status: 'idle' | 'queued' | 'running' | 'completed' | 'failed'; id?: string; url?: string; error?: string }
+
 export class StoryApiError extends Error {
   constructor(message: string, public readonly status: number) {
     super(message);
@@ -54,6 +59,29 @@ export function createStoryApi(
       method: 'POST', body: JSON.stringify(payload),
     });
     return saved.id;
+  }
+
+  async function listStories(): Promise<ProjectSummary[]> {
+    return (await requestJson<{ items: ProjectSummary[] }>('/stories', { method: 'GET' })).items;
+  }
+
+  async function getStory(id: string): Promise<Record<string, any>> {
+    return requestJson(`/stories/${encodeURIComponent(id)}`, { method: 'GET' });
+  }
+
+  async function listCharacterProfiles(): Promise<CharacterProfile[]> {
+    return (await requestJson<{ items: CharacterProfile[] }>('/stories/character-profiles', { method: 'GET' })).items;
+  }
+
+  async function saveCharacterProfile(profile: { id?: string; name: string; description: string; referenceData?: string; referenceUrl?: string | null; voiceId?: string | null }): Promise<CharacterProfile> {
+    const { id, ...body } = profile;
+    return requestJson<CharacterProfile>(id ? `/stories/character-profiles/${encodeURIComponent(id)}` : '/stories/character-profiles', {
+      method: id ? 'PUT' : 'POST', body: JSON.stringify(body),
+    });
+  }
+
+  async function listVoices(): Promise<MossVoice[]> {
+    return (await requestJson<{ items: MossVoice[] }>('/stories/voice-profiles', { method: 'GET' })).items;
   }
 
   async function saveStory(payload: StoryPayload, existingId?: string): Promise<string> {
@@ -87,7 +115,17 @@ export function createStoryApi(
     );
   }
 
-  return { saveStory, startSceneImage, getSceneImageStatus };
+  async function startSceneVoice(storyId: string, sceneId: string, voiceId?: string): Promise<SceneVoiceStatus> {
+    return requestJson(`/stories/${encodeURIComponent(storyId)}/scenes/${encodeURIComponent(sceneId)}/voice`, {
+      method: 'POST', body: JSON.stringify({ voiceId }),
+    });
+  }
+
+  async function getSceneVoiceStatus(storyId: string, sceneId: string): Promise<SceneVoiceStatus> {
+    return requestJson(`/stories/${encodeURIComponent(storyId)}/scenes/${encodeURIComponent(sceneId)}/voice/status`, { method: 'GET' });
+  }
+
+  return { saveStory, listStories, getStory, listCharacterProfiles, saveCharacterProfile, listVoices, startSceneImage, getSceneImageStatus, startSceneVoice, getSceneVoiceStatus };
 }
 
 export const storyApi = createStoryApi();

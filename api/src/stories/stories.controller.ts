@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   NotFoundException,
   Param,
@@ -22,6 +23,22 @@ export class StoriesController {
   @Get("providers") providers() {
     return this.stories.providers();
   }
+
+  @Get("character-profiles") characterProfiles() { return this.stories.listCharacters(); }
+
+  @Post("character-profiles") saveCharacterProfile(@Body() body: Record<string, unknown>) {
+    return this.stories.saveCharacter(body);
+  }
+
+  @Put("character-profiles/:id") updateCharacterProfile(@Param("id") id: string, @Body() body: Record<string, unknown>) {
+    return this.stories.saveCharacter(body, id);
+  }
+
+  @Delete("character-profiles/:id") deleteCharacterProfile(@Param("id") id: string) {
+    return this.stories.deleteCharacter(id);
+  }
+
+  @Get("voice-profiles") voiceProfiles() { return this.stories.listMossVoices(); }
 
   @Get("youtube/status") youtubeStatus() { return this.stories.youtubeStatus(); }
 
@@ -88,11 +105,18 @@ export class StoriesController {
   async generateVoice(
     @Param("id") id: string,
     @Param("sceneId") sceneId: string,
-    @Body() body: { voice?: string },
+    @Body() body: { voiceId?: string },
   ) {
     const story = await this.stories.get(id);
     if (!story) throw new NotFoundException("Story not found");
-    return this.stories.generateVoice(story, sceneId, body.voice);
+    return this.stories.generateVoice(story, sceneId, body.voiceId);
+  }
+
+  @Get(":id/scenes/:sceneId/voice/status")
+  async voiceStatus(@Param("id") id: string, @Param("sceneId") sceneId: string) {
+    const story = await this.stories.get(id);
+    if (!story) throw new NotFoundException("Story not found");
+    return this.stories.sceneVoiceStatus(story, sceneId);
   }
 
   @Post(":id/render")

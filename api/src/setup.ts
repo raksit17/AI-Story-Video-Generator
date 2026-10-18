@@ -25,7 +25,8 @@ export function setup(app: NestExpressApplication) {
     next();
   });
   app.setGlobalPrefix("api/v1");
-  app.useBodyParser("json", { limit: "1mb" });
+  // A PNG/JPEG profile reference is sent as a data URL (base64 adds ~33%).
+  app.useBodyParser("json", { limit: "12mb" });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
