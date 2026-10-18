@@ -9,6 +9,7 @@ import { mkdir, readFile, writeFile, access } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { Logger } from "@nestjs/common";
 import { outputImage, promptHistory, recoverPreviousOutput, retrieveComfyPng, type ComfyImage } from "./comfy-story-client";
+import { planStoryboard, planSceneVisual } from "./story-planner";
 
 type Story = Record<string, unknown> & { id: string; updatedAt: string };
 
@@ -24,7 +25,13 @@ export class StoriesService {
       comfyAvailable = response.ok;
     } catch { /* Provider is optional until configured. */ }
     return {
-      story: { configured: Boolean(process.env.OPENAI_API_KEY), provider: "OpenAI" },
+      story: {
+        configured: (process.env.STORY_PROVIDER || "ollama").toLowerCase() !== "openai" || Boolean(process.env.OPENAI_API_KEY),
+        provider: (process.env.STORY_PROVIDER || "ollama").toLowerCase() === "openai" ? "OpenAI" : "Ollama",
+        model: (process.env.STORY_PROVIDER || "ollama").toLowerCase() === "openai"
+          ? (process.env.STORY_MODEL || "gpt-4o-mini")
+          : (process.env.OLLAMA_STORY_MODEL || "qwen3.5:4b"),
+      },
       image: { configured: comfyAvailable, provider: "ComfyUI" },
       voice: { configured: Boolean(process.env.MOSS_API_URL), provider: "MOSS Voice Studio" },
       render: { configured: await this.ffmpegAvailable(), provider: "FFmpeg" },
@@ -253,38 +260,12 @@ export class StoriesService {
   }
 
   async generateStoryboard(input: Record<string, unknown>) {
-    const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
-    if (prompt.length < 8 || prompt.length > 4000) throw new BadRequestException("Prompt must be between 8 and 4000 characters");
-    const key = process.env.OPENAI_API_KEY;
-    if (!key) throw new ServiceUnavailableException("Set OPENAI_API_KEY to enable story generation");
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: process.env.STORY_MODEL ?? "gpt-4o-mini",
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: "Create a concise original video story. Return only JSON with keys title, synopsis, characters, scenes. characters must be an array of {name, role, appearance}. scenes must be an array of 4 to 12 {title, narration, imagePrompt, duration, motion, subtitle}. Keep all writing in the requested language. Keep character appearance consistent in every imagePrompt. Never imitate named copyrighted characters or living artists." },
-          { role: "user", content: JSON.stringify({ prompt, genre: input.genre, artStyle: input.artStyle, language: input.language, duration: input.duration, aspect: input.aspect }) },
-        ],
-      }),
-      signal: AbortSignal.timeout(120000),
-    });
-    if (!response.ok) throw new ServiceUnavailableException(`Story provider returned ${response.status}`);
-    const payload = await response.json() as any;
-    let result: any;
-    try { result = JSON.parse(payload.choices?.[0]?.message?.content ?? ""); }
-    catch { throw new ServiceUnavailableException("Story provider returned invalid JSON"); }
-    if (!Array.isArray(result.scenes) || result.scenes.length < 1 || result.scenes.length > 20)
-      throw new ServiceUnavailableException("Story provider returned an invalid scene list");
-    const sceneRows = result.scenes.map((s: any, i: number) => ({
-      id: randomUUID(), title: String(s.title ?? `Scene ${i + 1}`).slice(0, 120),
-      narration: String(s.narration ?? "").slice(0, 3000), imagePrompt: String(s.imagePrompt ?? "").slice(0, 2000),
-      duration: Math.min(60, Math.max(1, Number(s.duration) || 7)), motion: String(s.motion ?? "slow_zoom"), subtitle: String(s.subtitle ?? s.narration ?? "").slice(0, 3000),
-    }));
-    return { title: String(result.title ?? "Untitled story").slice(0, 120), synopsis: String(result.synopsis ?? "").slice(0, 2000), characters: Array.isArray(result.characters) ? result.characters.slice(0, 12) : [], scenes: sceneRows };
+    return planStoryboard(input);
   }
 
+  async generateSceneVisual(input: Record<string, unknown>) {
+    return planSceneVisual(input);
+  }
 
   private comfyUrl() {
     return (process.env.COMFYUI_URL ?? "http://127.0.0.1:8188").replace(/\/$/, "");
