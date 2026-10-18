@@ -55,6 +55,23 @@ export function createStoryApi(
     return response.json() as Promise<T>;
   }
 
+  async function generateStoryboard(input: {
+    prompt: string; genre: string; language: string; aspect: string;
+    character?: { name: string; look: string }; sceneCount?: number;
+  }): Promise<{ title: string; synopsis: string; scenes: Array<{
+    id: string; title: string; narration: string; imagePrompt: string;
+    duration: number; motion: string; subtitle: string;
+  }>; planner?: string }> {
+    return requestJson('/stories/storyboard', { method: 'POST', body: JSON.stringify(input) });
+  }
+
+  async function generateSceneVisual(input: {
+    narration: string; title: string; story: string; genre: string;
+    language: string; aspect: string; character: { name: string; look: string };
+  }): Promise<{ imagePrompt: string; provider: string }> {
+    return requestJson('/stories/scene-visual', { method: 'POST', body: JSON.stringify(input) });
+  }
+
   async function createStory(payload: StoryPayload): Promise<string> {
     const saved = await requestJson<{ id: string }>('/stories', {
       method: 'POST', body: JSON.stringify(payload),
@@ -126,7 +143,7 @@ export function createStoryApi(
     return requestJson(`/stories/${encodeURIComponent(storyId)}/scenes/${encodeURIComponent(sceneId)}/voice/status`, { method: 'GET' });
   }
 
-  return { saveStory, listStories, getStory, listCharacterProfiles, saveCharacterProfile, listVoices, startSceneImage, getSceneImageStatus, startSceneVoice, getSceneVoiceStatus };
+  return { generateStoryboard, generateSceneVisual, saveStory, listStories, getStory, listCharacterProfiles, saveCharacterProfile, listVoices, startSceneImage, getSceneImageStatus, startSceneVoice, getSceneVoiceStatus };
 }
 
 export const storyApi = createStoryApi();

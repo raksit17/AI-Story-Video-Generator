@@ -35,3 +35,29 @@ In Phase 03, choose a character, enter its fixed appearance, upload a PNG or JPE
 For RTX 4060 8 GB, set `COMFYUI_REFERENCE_DENOISE=0.45` in `api/.env`; this controls image-to-image change strength (accepted 0.25–0.80). Small values preserve source composition/clothes but make changing pose or camera difficult; larger values permit changes but reduce similarity. Basic SDXL img2img cannot guarantee identical faces across different poses. IP-Adapter or a trained character LoRA would be a separate enhancement requiring additional ComfyUI models/custom nodes.
 
 Only PNG/JPEG up to 8 MiB is accepted, and the API JSON parser supports the base64 payload. If you have a pre-existing local project, save the character once before generating. Keep the original NestJS `api/storage/stories` directory, otherwise saved reference URLs become invalid. Generate new images after changing a character; already-rendered images will not be rewritten automatically.
+
+
+### AI Story Planner (Ollama + Qwen)
+
+The Storyboard **สร้างสตอรี่บอร์ดด้วย AI** button now calls NestJS `POST /api/v1/stories/storyboard`. With the default `STORY_PROVIDER=ollama`, NestJS sends the story idea, language, genre, aspect ratio, and selected character appearance to a local Ollama Qwen model to generate scene-specific **narration in the chosen language and English ComfyUI imagePrompt for the SAME event**. It returns clear API errors rather than silently replacing a failed AI result with the old generic five-scene sample. To try that original sample, explicitly choose **ใช้โครงเรื่องตัวอย่าง (ไม่ใช้ AI)**.
+
+Windows setup:
+
+```powershell
+ollama pull qwen3.5:4b
+ollama list
+Invoke-RestMethod http://127.0.0.1:11434/api/tags
+```
+
+In `api/.env`:
+
+```dotenv
+STORY_PROVIDER=ollama
+OLLAMA_URL=http://127.0.0.1:11434
+OLLAMA_STORY_MODEL=qwen3.5:4b
+```
+
+Restart the API after editing `.env`; Web still uses `API_PROXY_TARGET=http://127.0.0.1:3002`. No OpenAI API key is needed for Ollama. If preferred, choose `STORY_PROVIDER=openai`, `OPENAI_API_KEY=<your-secret>`, and `STORY_MODEL=gpt-4o-mini` in **API** environment, never in browser `VITE_*` values.
+
+After editing a scene's **บทบรรยาย**, press **สร้าง Prompt ภาพจากบทบรรยาย** to call `POST /api/v1/stories/scene-visual`. It translates the narration and selected character's fixed appearance into a drawable English visual prompt without overwriting the voiceover. Then press **สร้างภาพ AI** to render the new prompt. The old image preview is retained until a new image finishes; narration edits alone do not regenerate images or change an already completed render. The character profile reference PNG can still be used by ComfyUI img2img. GPU runtime and model availability must be checked locally; GitHub CI mocks the Ollama response and doesn't run model inference.
+

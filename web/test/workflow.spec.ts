@@ -25,7 +25,25 @@ beforeEach(() => {
     if (url.endsWith("/stories") && options.method === "GET") return reply({ items: [] });
     if (url.endsWith("/stories/character-profiles")) return reply({ items: [] });
     if (url.endsWith("/stories/voice-profiles")) return reply({ items: [] });
-    if (url.endsWith("/stories/storyboard")) return reply({ message: "AI provider is not configured" }, 503);
+    if (url.endsWith("/stories/storyboard")) {
+      const body = JSON.parse(String(options.body));
+      if (body.prompt === "FAIL PROVIDER") return reply({ message: "Ollama offline" }, 503);
+      return reply({
+        title: "ลูน่าค้นพบประตู",
+        scenes: Array.from({ length: 5 }, (_, i) => ({
+          id: `00000000-0000-4000-8000-${String(i+1).padStart(12, "0")}`,
+          title: `Scene ${i+1}`,
+          narration: `ลูน่าพบประตูเรืองแสงในสำนักงาน ฉาก ${i+1}`,
+          imagePrompt: `Luna stands in the office beside a glowing blue portal, scene ${i+1}, cinematic lighting`,
+          duration: 7,
+          motion: "slow_zoom",
+        })),
+      });
+    }
+    if (url.endsWith("/stories/scene-visual")) return reply({
+      imagePrompt: "Luna startled as a glowing blue magical portal opens behind her at the office, anime medium shot",
+      provider: "ollama",
+    });
     if (url.endsWith("/stories") && options.method === "POST") return reply({ id: "saved-story" }, 201);
     if (url.endsWith("/image") && options.method === "POST") {
       return reply({ status: "queued", promptId: "comfy-prompt" }, 201);
@@ -51,7 +69,7 @@ afterEach(() => {
 });
 
 describe("Storyframe project and ComfyUI image workflow", () => {
-  it("creates local storyboard, saves story, queues image and previews resulting PNG", async () => {
+  it("creates AI-directed storyboard, saves story, queues image and previews resulting PNG", async () => {
     wrapper = mount(App);
     await wrapper.get(".prompt-panel textarea").setValue("เด็กสาวเดินทางเข้าป่าต้องห้าม");
     await wrapper.get(".generate").trigger("click");
@@ -101,4 +119,35 @@ describe("Storyframe project and ComfyUI image workflow", () => {
     const saved = JSON.parse(localStorage.getItem("storyframe-project-v1")!);
     expect(saved.scenes[0].imageUrl).toBe(imageUrl);
   });
+  it("generates a visual prompt directly from edited narration without silently using a sample story", async () => {
+    wrapper = mount(App);
+    await wrapper.get(".prompt-panel textarea").setValue("ลูน่าทำงานในสำนักงานจนเกิดประตูมิติ");
+    await wrapper.get(".generate").trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll(".scene-row")).toHaveLength(5);
+    expect(wrapper.get(".scene-fields textarea").element).toBeTruthy();
+    const narration = wrapper.findAll(".scene-fields textarea")[0];
+    await narration.setValue("ลูน่าสะดุ้งเมื่อประตูมิติสีน้ำเงินเปิดอยู่ข้างหลังในสำนักงาน");
+    const sync = wrapper.findAll("button").find(b => b.text().includes("สร้าง Prompt ภาพจากบทบรรยาย"));
+    expect(sync).toBeTruthy();
+    await sync!.trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll(".scene-fields textarea")[1].element).toBeTruthy();
+    expect((wrapper.findAll(".scene-fields textarea")[1].element as HTMLTextAreaElement).value)
+      .toContain("glowing blue");
+    const request = requests.find(r => r.url.endsWith("/scene-visual"));
+    expect(request).toBeTruthy();
+    expect(JSON.parse(String(request!.options.body)).narration).toContain("ประตูมิติสีน้ำเงิน");
+  });
+
+  it("surfaces Ollama failure rather than replacing the user's story with generic scenes", async () => {
+    wrapper = mount(App);
+    await wrapper.get(".prompt-panel textarea").setValue("FAIL PROVIDER");
+    await wrapper.get(".generate").trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll(".scene-row")).toHaveLength(0);
+    expect(wrapper.get('[role="alert"]').text()).toContain("Ollama offline");
+    expect(wrapper.text()).toContain("ใช้โครงเรื่องตัวอย่าง (ไม่ใช้ AI)");
+  });
+
 });
