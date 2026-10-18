@@ -303,20 +303,6 @@ export class StoriesService {
     graph["7"].inputs.text = "text, watermark, logo, blurry, deformed, low quality";
     graph["9"].inputs.filename_prefix = `AIStory/${storyId}/${sceneId}`;
 
-<<<<<<< HEAD
-    // The bundled SDXL graph is txt2img. When a saved character image exists,
-    // turn it into a low-denoise img2img seed using built-in ComfyUI nodes.
-    const characters = Array.isArray(story.characters) ? story.characters as Array<Record<string, unknown>> : [];
-    const reference = characters.find((character) => typeof character.referenceUrl === "string")?.referenceUrl;
-    const referencePath = this.assetFromUrl(reference, "image");
-    if (referencePath) {
-      const upload = await this.uploadComfyReference(referencePath);
-      graph["10"] = { class_type: "LoadImage", inputs: { image: upload } };
-      graph["12"] = { class_type: "ImageScale", inputs: { image: ["10", 0], upscale_method: "lanczos", width, height, crop: "center" } };
-      graph["11"] = { class_type: "VAEEncode", inputs: { pixels: ["12", 0], vae: ["4", 2] } };
-      graph["3"].inputs.latent_image = ["11", 0];
-      graph["3"].inputs.denoise = Math.min(0.65, Math.max(0.25, Number(process.env.COMFYUI_REFERENCE_DENOISE ?? 0.45)));
-=======
     // Always resolve the latest saved profile; do not silently ignore an invalid reference.
     const characters = Array.isArray(story.characters) ? story.characters as Array<Record<string, unknown>> : [];
     const character = characters.find((item) => item.id || item.referenceUrl);
@@ -341,7 +327,6 @@ export class StoriesService {
       Logger.log(`Applying real img2img reference for scene ${sceneId}`, "StoryImage");
     } else if (character?.id) {
       Logger.warn(`Character ${String(character.id)} has no image; generating prompt-only`, "StoryImage");
->>>>>>> origin/main
     }
 
     let response: Response;
@@ -366,22 +351,6 @@ export class StoriesService {
     await this.save(story, storyId);
     Logger.log(`Image queued: story=${storyId} scene=${sceneId} prompt=${accepted.prompt_id}`, "StoryImage");
     return { status: "queued", promptId: accepted.prompt_id, referenceUsed };
-  }
-
-  private async uploadComfyReference(path: string): Promise<string> {
-    const bytes = await readFile(path);
-    const form = new FormData();
-    form.append("image", new Blob([new Uint8Array(bytes)]), basename(path));
-    form.append("type", "input");
-    form.append("overwrite", "true");
-    let response: Response;
-    try {
-      response = await fetch(`${this.comfyUrl()}/upload/image`, { method: "POST", body: form, signal: AbortSignal.timeout(30000) });
-    } catch (error) { throw new ServiceUnavailableException(`ComfyUI reference upload failed: ${String(error)}`); }
-    if (!response.ok) throw new ServiceUnavailableException(`ComfyUI reference upload returned ${response.status}`);
-    const result = await response.json() as { name?: string; subfolder?: string };
-    if (!result.name) throw new ServiceUnavailableException("ComfyUI did not accept the character reference image");
-    return result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
   }
 
   private async uploadComfyReference(path: string): Promise<string> {
