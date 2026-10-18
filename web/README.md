@@ -13,7 +13,7 @@ Open the local URL printed by Vite. The project saves its current draft in brows
 
 ## API connection
 
-The storyboard form calls `POST /api/v1/stories/storyboard`. If the story provider is unavailable, it creates a local sample storyboard.
+The storyboard form calls `POST /api/v1/stories/storyboard`. If the story provider is unavailable, the UI reports an error; an explicit sample-only button is available.
 
 ### Generate a scene image with ComfyUI
 
@@ -28,14 +28,13 @@ The web app first saves the entire story using `POST /api/v1/stories` or `PUT /a
 For local testing, keep `HOST=127.0.0.1` and leave `API_KEY` empty, or use a trusted server-side gateway to provide `X-API-Key`. Do **not** place API secrets in browser-exposed `VITE_*` variables. Voice generation, video rendering, and YouTube upload still require separate provider configuration and UI wiring.
 
 
-### Character reference images (ComfyUI img2img)
+### Character reference images — SDXL IP-Adapter (not img2img)
 
-In Phase 03, choose a character, enter its fixed appearance, upload a PNG or JPEG, and click **บันทึกตัวละครไว้ใช้ซ้ำ**. This uploads the actual bytes to the NestJS story assets directory. **ใช้กับทุกฉาก →** also saves/links the uploaded image to the story, not just the text description. When a scene image is generated, NestJS retrieves the persisted character image and posts it to ComfyUI `/upload/image`; the workflow uses built-in `LoadImage → ImageScale → VAEEncode → KSampler` nodes instead of an empty latent. The UI reports whether a reference image was actually used. An invalid or missing referenced asset causes an explicit error, not a silent prompt-only fallback.
+In Phase 03, save a PNG/JPEG character reference. On **สร้างภาพ AI** or **สร้างภาพใหม่**, NestJS sends its stored pixels to ComfyUI and uses `LoadImage → IPAdapterModelLoader + CLIPVisionLoader → IPAdapterAdvanced → KSampler` with `EmptyLatentImage`. Thus each scene's text prompt, not the reference's original crop, controls the new background, pose and framing. The browser reports **SDXL IP-Adapter** while rendering. Existing saved images remain available; pressing Generate explicitly requests a fresh render instead of automatically recovering an older image. Opening a saved project still recovers a pending or completed image.
 
-For RTX 4060 8 GB, set `COMFYUI_REFERENCE_DENOISE=0.45` in `api/.env`; this controls image-to-image change strength (accepted 0.25–0.80). Small values preserve source composition/clothes but make changing pose or camera difficult; larger values permit changes but reduce similarity. Basic SDXL img2img cannot guarantee identical faces across different poses. IP-Adapter or a trained character LoRA would be a separate enhancement requiring additional ComfyUI models/custom nodes.
+**One-time setup is mandatory**: install `cubiq/ComfyUI_IPAdapter_plus` in your ComfyUI custom nodes, download the matching ViT-H image encoder to `ComfyUI/models/clip_vision/CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors`, and the SDXL Plus adapter to `ComfyUI/models/ipadapter/ip-adapter-plus_sdxl_vit-h.safetensors`. Restart ComfyUI afterward. Exact download links and Windows steps are in [IPADAPTER_SETUP.md](../comfyui/IPADAPTER_SETUP.md). The API checks the installed nodes and model choices via `/object_info` and reports a descriptive error rather than silently reverting to img2img.
 
-Only PNG/JPEG up to 8 MiB is accepted, and the API JSON parser supports the base64 payload. If you have a pre-existing local project, save the character once before generating. Keep the original NestJS `api/storage/stories` directory, otherwise saved reference URLs become invalid. Generate new images after changing a character; already-rendered images will not be rewritten automatically.
-
+For an RTX 4060 laptop (8 GB VRAM), start at `COMFYUI_IPADAPTER_WEIGHT=0.70` and `COMFYUI_IPADAPTER_END_AT=0.85`. Lower weight (e.g. 0.55) can increase prompt freedom; higher may preserve more reference characteristics but may bias composition. Identity is **not guaranteed** across poses, and IP-Adapter does not automatically enforce an identical face. Existing SDXL `COMFYUI_REFERENCE_DENOISE` is ignored. Keep the API story assets directory; deleting it breaks saved image references.
 
 ### AI Story Planner (Ollama + Qwen)
 
@@ -59,5 +58,5 @@ OLLAMA_STORY_MODEL=qwen3.5:4b
 
 Restart the API after editing `.env`; Web still uses `API_PROXY_TARGET=http://127.0.0.1:3002`. No OpenAI API key is needed for Ollama. If preferred, choose `STORY_PROVIDER=openai`, `OPENAI_API_KEY=<your-secret>`, and `STORY_MODEL=gpt-4o-mini` in **API** environment, never in browser `VITE_*` values.
 
-After editing a scene's **บทบรรยาย**, press **สร้าง Prompt ภาพจากบทบรรยาย** to call `POST /api/v1/stories/scene-visual`. It translates the narration and selected character's fixed appearance into a drawable English visual prompt without overwriting the voiceover. Then press **สร้างภาพ AI** to render the new prompt. The old image preview is retained until a new image finishes; narration edits alone do not regenerate images or change an already completed render. The character profile reference PNG can still be used by ComfyUI img2img. GPU runtime and model availability must be checked locally; GitHub CI mocks the Ollama response and doesn't run model inference.
+After editing a scene's **บทบรรยาย**, press **สร้าง Prompt ภาพจากบทบรรยาย** to call `POST /api/v1/stories/scene-visual`. It translates the narration and selected character's fixed appearance into a drawable English visual prompt without overwriting the voiceover. Then press **สร้างภาพ AI** to render the new prompt. The old image preview is retained until a new image finishes; narration edits alone do not regenerate images or change an already completed render. The character profile reference PNG is used by ComfyUI SDXL IP-Adapter (when the matching models and custom node are installed). GPU runtime and model availability must be checked locally; GitHub CI mocks the Ollama response and doesn't run model inference.
 
