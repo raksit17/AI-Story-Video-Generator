@@ -10,6 +10,7 @@ import { basename, join, resolve } from "node:path";
 import { Logger } from "@nestjs/common";
 import { outputImage, promptHistory, recoverPreviousOutput, retrieveComfyPng, type ComfyImage } from "./comfy-story-client";
 import { planStoryboard, planSceneVisual } from "./story-planner";
+import { imageModelConfiguration, resolveImageModelPreset } from "./image-model-preset";
 
 type Story = Record<string, unknown> & { id: string; updatedAt: string };
 
@@ -294,13 +295,18 @@ export class StoriesService {
     let graph: any;
     try { graph = JSON.parse(await readFile(workflowPath, "utf8")); }
     catch { throw new ServiceUnavailableException("ComfyUI workflow is missing"); }
-    graph["4"].inputs.ckpt_name = process.env.COMFYUI_CHECKPOINT ?? "sd_xl_base_1.0.safetensors";
+    const imageModel = imageModelConfiguration(resolveImageModelPreset(story.imageModel), imagePrompt);
+    if (imageModel.id === "animagine-xl-3.1") await this.assertAnimagineCheckpointReady(imageModel.checkpoint);
+    graph["4"].inputs.ckpt_name = imageModel.checkpoint;
+    graph["3"].inputs.steps = imageModel.steps;
+    graph["3"].inputs.cfg = imageModel.cfg;
+    graph["3"].inputs.sampler_name = imageModel.sampler;
     const [width, height] = story.aspect === "16:9" ? [1024, 576] : story.aspect === "1:1" ? [768, 768] : [576, 1024];
     graph["5"].inputs.width = width;
     graph["5"].inputs.height = height;
     graph["3"].inputs.seed = Math.floor(Math.random() * 2_147_000_000);
-    graph["6"].inputs.text = `${imagePrompt}, cinematic illustration, consistent story character design`;
-    graph["7"].inputs.text = "text, watermark, logo, blurry, deformed, low quality";
+    graph["6"].inputs.text = imageModel.positive;
+    graph["7"].inputs.text = imageModel.negative;
     graph["9"].inputs.filename_prefix = `AIStory/${storyId}/${sceneId}`;
 
     // Character reference conditions the SDXL model, NOT its latent.
@@ -369,9 +375,29 @@ export class StoriesService {
     scene.imageJob = { promptId: accepted.prompt_id, submittedAt: Date.now(), referenceUsed, referenceMode };
     scene.imageReferenceUrl = referenceUsed ? referenceUrl : null;
     scene.imageReferenceMode = referenceMode;
+    scene.imageModel = imageModel.id;
     await this.save(story, storyId);
     Logger.log(`Image queued: story=${storyId} scene=${sceneId} prompt=${accepted.prompt_id}`, "StoryImage");
     return { status: "queued", promptId: accepted.prompt_id, referenceUsed, referenceMode };
+  }
+
+  private async assertAnimagineCheckpointReady(filename: string): Promise<void> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.comfyUrl()}/object_info/CheckpointLoaderSimple`, {
+        signal: AbortSignal.timeout(7000),
+      });
+    } catch (error) {
+      throw new ServiceUnavailableException(`Cannot check ComfyUI checkpoints: ${String(error)}`);
+    }
+    if (!response.ok) throw new ServiceUnavailableException(`ComfyUI checkpoint inspection failed (HTTP ${response.status})`);
+    const available = (await response.json() as Record<string, any>)
+      .CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0];
+    if (!Array.isArray(available) || !available.includes(filename)) {
+      throw new ServiceUnavailableException(
+        `Animagine XL 3.1 checkpoint not found: ${filename}. Download it into ComfyUI/models/checkpoints, restart ComfyUI, and match COMFYUI_ANIMAGINE_CHECKPOINT.`,
+      );
+    }
   }
 
   private async assertIpAdapterReady(modelFile: string, visionFile: string): Promise<void> {
