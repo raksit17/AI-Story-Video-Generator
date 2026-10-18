@@ -57,6 +57,10 @@ export class StoriesController {
     return this.stories.generateStoryboard(body);
   }
 
+  @Post("scene-visual") sceneVisual(@Body() body: Record<string, unknown>) {
+    return this.stories.generateSceneVisual(body);
+  }
+
   @Get() list() {
     return this.stories.list();
   }
