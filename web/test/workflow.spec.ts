@@ -22,6 +22,9 @@ beforeEach(() => {
   vi.stubGlobal("crypto", { randomUUID: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, "0")}` });
   vi.stubGlobal("fetch", vi.fn((url: string, options: RequestInit = {}) => {
     requests.push({ url, options });
+    if (url.endsWith("/stories") && options.method === "GET") return reply({ items: [] });
+    if (url.endsWith("/stories/character-profiles")) return reply({ items: [] });
+    if (url.endsWith("/stories/voice-profiles")) return reply({ items: [] });
     if (url.endsWith("/stories/storyboard")) return reply({ message: "AI provider is not configured" }, 503);
     if (url.endsWith("/stories") && options.method === "POST") return reply({ id: "saved-story" }, 201);
     if (url.endsWith("/image") && options.method === "POST") {
@@ -58,6 +61,9 @@ describe("Storyframe project and ComfyUI image workflow", () => {
     await wrapper.get(".preview-controls button").trigger("click");
     await flushPromises();
     expect(requests.map(r => r.url)).toEqual([
+      "/api/v1/stories",
+      "/api/v1/stories/character-profiles",
+      "/api/v1/stories/voice-profiles",
       "/api/v1/stories/storyboard",
       "/api/v1/stories",
       "/api/v1/stories/saved-story/scenes/00000000-0000-4000-8000-000000000001/image/status",

@@ -26,7 +26,7 @@ export class StoriesService {
     return {
       story: { configured: Boolean(process.env.OPENAI_API_KEY), provider: "OpenAI" },
       image: { configured: comfyAvailable, provider: "ComfyUI" },
-      voice: { configured: Boolean(process.env.OPENAI_API_KEY), provider: "OpenAI TTS" },
+      voice: { configured: Boolean(process.env.MOSS_API_URL), provider: "MOSS Voice Studio" },
       render: { configured: await this.ffmpegAvailable(), provider: "FFmpeg" },
       youtube: { configured: this.youtubeConfigured(), provider: "YouTube Data API" },
     };
@@ -139,6 +139,87 @@ export class StoriesService {
     return this.read(id);
   }
 
+  private characterRoot() { return join(this.root, "characters"); }
+
+  async listCharacters() {
+    const dir = this.characterRoot();
+    await mkdir(dir, { recursive: true });
+    const { readdir } = await import("node:fs/promises");
+    const files = (await readdir(dir)).filter((name) => /^[0-9a-f-]{36}\.json$/i.test(name));
+    const items = await Promise.all(files.map(async (name) => {
+      try { return JSON.parse(await readFile(join(dir, name), "utf8")); } catch { return null; }
+    }));
+    return { items: items.filter(Boolean).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))) };
+  }
+
+  async saveCharacter(input: Record<string, unknown>, id?: string) {
+    const profileId = id ?? randomUUID();
+    if (!/^[0-9a-f-]{36}$/i.test(profileId)) throw new BadRequestException("Invalid character profile ID");
+    const name = typeof input.name === "string" ? input.name.trim().slice(0, 80) : "";
+    const description = typeof input.description === "string" ? input.description.trim().slice(0, 2000) : "";
+    if (!name || !description) throw new BadRequestException("Character name and appearance are required");
+    const dir = this.characterRoot();
+    await mkdir(dir, { recursive: true });
+    const previous = await this.readCharacter(profileId);
+    let referenceUrl = previous?.referenceUrl ?? null;
+    if (typeof input.referenceData === "string" && input.referenceData) {
+      const match = input.referenceData.match(/^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$/);
+      if (!match) throw new BadRequestException("Reference image must be PNG or JPEG");
+      const bytes = Buffer.from(match[2], "base64");
+      if (!bytes.length || bytes.length > 8 * 1024 * 1024) throw new BadRequestException("Reference image must be at most 8 MB");
+      const validPng = match[1] === "image/png" && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      const validJpeg = match[1] === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+      if (!validPng && !validJpeg) throw new BadRequestException("Reference image data does not match its PNG/JPEG type");
+      const ext = match[1] === "image/png" ? "png" : "jpg";
+      const imageId = randomUUID();
+      await writeFile(join(this.root, `${imageId}.${ext}`), bytes);
+      referenceUrl = `/api/v1/stories/assets/${imageId}.${ext}`;
+    } else if (typeof input.referenceUrl === "string") {
+      referenceUrl = input.referenceUrl;
+    }
+    const profile = {
+      id: profileId, name, description, referenceUrl,
+      voiceId: typeof input.voiceId === "string" ? input.voiceId : previous?.voiceId ?? null,
+      createdAt: previous?.createdAt ?? new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    await writeFile(join(dir, `${profileId}.json`), JSON.stringify(profile, null, 2), "utf8");
+    return profile;
+  }
+
+  async deleteCharacter(id: string) {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new BadRequestException("Invalid character profile ID");
+    const profile = await this.readCharacter(id);
+    if (!profile) return { deleted: false };
+    const { rm } = await import("node:fs/promises");
+    await rm(join(this.characterRoot(), `${id}.json`), { force: true });
+    return { deleted: true };
+  }
+
+  private async readCharacter(id: string): Promise<any | null> {
+    try { return JSON.parse(await readFile(join(this.characterRoot(), `${id}.json`), "utf8")); } catch { return null; }
+  }
+
+  private mossBase() { return (process.env.MOSS_API_URL ?? "http://127.0.0.1:8001").replace(/\/$/, ""); }
+
+  private async mossRequest(path: string, init: RequestInit = {}) {
+    const headers = new Headers(init.headers);
+    headers.set("X-API-Key", process.env.MOSS_API_KEY ?? "local-dev-key");
+    if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    let response: Response;
+    try { response = await fetch(`${this.mossBase()}${path}`, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(30000) }); }
+    catch (error) { throw new ServiceUnavailableException(`MOSS Voice Studio is unreachable: ${String(error)}`); }
+    if (!response.ok) {
+      const message = await response.text().catch(() => "");
+      throw new ServiceUnavailableException(`MOSS Voice Studio returned ${response.status}: ${message.slice(0, 240)}`);
+    }
+    return response;
+  }
+
+  async listMossVoices() {
+    const response = await this.mossRequest("/v1/voices");
+    return response.json();
+  }
+
   async save(input: Record<string, unknown>, id: string = randomUUID()) {
     if (!/^[0-9a-f-]{36}$/i.test(id)) throw new BadRequestException("Invalid story ID");
     await mkdir(this.root, { recursive: true });
@@ -152,6 +233,8 @@ export class StoriesService {
         scene.imageJob = old?.imageJob ?? null;
       }
       if (!scene.imageUrl && old?.imageUrl) scene.imageUrl = old.imageUrl;
+      if (!Object.prototype.hasOwnProperty.call(scene, "voiceJob")) scene.voiceJob = old?.voiceJob ?? null;
+      if (!scene.audioUrl && old?.audioUrl) scene.audioUrl = old.audioUrl;
     }
     delete storyInput.thumbnailData;
     delete storyInput.musicData;
@@ -231,10 +314,27 @@ export class StoriesService {
     try { graph = JSON.parse(await readFile(workflowPath, "utf8")); }
     catch { throw new ServiceUnavailableException("ComfyUI workflow is missing"); }
     graph["4"].inputs.ckpt_name = process.env.COMFYUI_CHECKPOINT ?? "sd_xl_base_1.0.safetensors";
+    const [width, height] = story.aspect === "16:9" ? [1024, 576] : story.aspect === "1:1" ? [768, 768] : [576, 1024];
+    graph["5"].inputs.width = width;
+    graph["5"].inputs.height = height;
     graph["3"].inputs.seed = Math.floor(Math.random() * 2_147_000_000);
     graph["6"].inputs.text = `${imagePrompt}, cinematic illustration, consistent story character design`;
     graph["7"].inputs.text = "text, watermark, logo, blurry, deformed, low quality";
     graph["9"].inputs.filename_prefix = `AIStory/${storyId}/${sceneId}`;
+
+    // The bundled SDXL graph is txt2img. When a saved character image exists,
+    // turn it into a low-denoise img2img seed using built-in ComfyUI nodes.
+    const characters = Array.isArray(story.characters) ? story.characters as Array<Record<string, unknown>> : [];
+    const reference = characters.find((character) => typeof character.referenceUrl === "string")?.referenceUrl;
+    const referencePath = this.assetFromUrl(reference, "image");
+    if (referencePath) {
+      const upload = await this.uploadComfyReference(referencePath);
+      graph["10"] = { class_type: "LoadImage", inputs: { image: upload } };
+      graph["12"] = { class_type: "ImageScale", inputs: { image: ["10", 0], upscale_method: "lanczos", width, height, crop: "center" } };
+      graph["11"] = { class_type: "VAEEncode", inputs: { pixels: ["12", 0], vae: ["4", 2] } };
+      graph["3"].inputs.latent_image = ["11", 0];
+      graph["3"].inputs.denoise = Math.min(0.65, Math.max(0.25, Number(process.env.COMFYUI_REFERENCE_DENOISE ?? 0.45)));
+    }
 
     let response: Response;
     try {
@@ -257,6 +357,22 @@ export class StoriesService {
     await this.save(story, storyId);
     Logger.log(`Image queued: story=${storyId} scene=${sceneId} prompt=${accepted.prompt_id}`, "StoryImage");
     return { status: "queued", promptId: accepted.prompt_id };
+  }
+
+  private async uploadComfyReference(path: string): Promise<string> {
+    const bytes = await readFile(path);
+    const form = new FormData();
+    form.append("image", new Blob([new Uint8Array(bytes)]), basename(path));
+    form.append("type", "input");
+    form.append("overwrite", "true");
+    let response: Response;
+    try {
+      response = await fetch(`${this.comfyUrl()}/upload/image`, { method: "POST", body: form, signal: AbortSignal.timeout(30000) });
+    } catch (error) { throw new ServiceUnavailableException(`ComfyUI reference upload failed: ${String(error)}`); }
+    if (!response.ok) throw new ServiceUnavailableException(`ComfyUI reference upload returned ${response.status}`);
+    const result = await response.json() as { name?: string; subfolder?: string };
+    if (!result.name) throw new ServiceUnavailableException("ComfyUI did not accept the character reference image");
+    return result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
   }
 
   // GET is also a recovery endpoint: it can find an output generated by the
@@ -325,27 +441,53 @@ export class StoriesService {
   }
 
   async generateVoice(story: Story, sceneId: string, requestedVoice?: string) {
-    const key = process.env.OPENAI_API_KEY;
-    if (!key) throw new ServiceUnavailableException("Set OPENAI_API_KEY to enable narration");
     const scenes = story.scenes as Array<Record<string, any>>;
     const scene = scenes?.find((item) => item.id === sceneId);
     if (!scene || typeof scene.narration !== "string" || !scene.narration.trim())
       throw new BadRequestException("Scene narration is required");
-    const voices = ["alloy","ash","ballad","coral","echo","fable","onyx","nova","sage","shimmer","verse"];
-    const voice = requestedVoice && voices.includes(requestedVoice) ? requestedVoice : process.env.TTS_VOICE ?? "coral";
-    const response = await fetch("https://api.openai.com/v1/audio/speech", {
-      method:"POST", headers:{ Authorization:`Bearer ${key}`, "Content-Type":"application/json" },
-      body:JSON.stringify({ model:process.env.TTS_MODEL ?? "gpt-4o-mini-tts", voice, input:scene.narration, instructions:"Speak clearly and naturally in Thai. Keep a warm storytelling tone.", response_format:"mp3" }),
-      signal:AbortSignal.timeout(120000),
+    const language = String(story.language ?? "ไทย").toLowerCase().startsWith("en") ? "English" : "Thai";
+    const created = await this.mossRequest("/v1/jobs", {
+      method: "POST",
+      body: JSON.stringify({ text: scene.narration.trim(), language, voice_id: requestedVoice || null }),
     });
-    if (!response.ok) throw new ServiceUnavailableException(`TTS provider returned ${response.status}`);
-    await mkdir(this.root, { recursive:true });
-    const fileId = randomUUID();
-    const filePath = join(this.root, `${fileId}.mp3`);
-    await writeFile(filePath, Buffer.from(await response.arrayBuffer()));
-    scene.audioUrl = `/api/v1/stories/assets/${fileId}.mp3`;
+    const job = await created.json() as { id?: string; status?: string };
+    if (!job.id) throw new ServiceUnavailableException("MOSS Voice Studio did not return a job ID");
+    scene.voiceJob = { id: job.id, voiceId: requestedVoice ?? null, status: job.status ?? "queued" };
     await this.save(story, story.id);
-    return { id:fileId, url:scene.audioUrl };
+    return { id: job.id, status: job.status ?? "queued" };
+  }
+
+  async sceneVoiceStatus(story: Story, sceneId: string) {
+    const scenes = story.scenes as Array<Record<string, any>>;
+    const scene = scenes?.find((item) => item.id === sceneId);
+    if (!scene) throw new BadRequestException("Scene not found");
+    if (scene.audioUrl && !scene.voiceJob) return { status: "completed", url: scene.audioUrl };
+    const jobId = scene.voiceJob?.id;
+    if (!jobId) return { status: "idle" };
+    const response = await this.mossRequest(`/v1/jobs/${encodeURIComponent(jobId)}`);
+    const job = await response.json() as { status?: string; error?: string };
+    if (job.status === "failed") {
+      scene.voiceJob.status = "failed";
+      scene.voiceJob.error = job.error ?? "MOSS voice generation failed";
+      await this.save(story, story.id);
+      return { status: "failed", error: scene.voiceJob.error };
+    }
+    if (job.status !== "completed") {
+      scene.voiceJob.status = job.status ?? "running";
+      await this.save(story, story.id);
+      return { status: scene.voiceJob.status };
+    }
+    const audioResponse = await this.mossRequest(`/v1/jobs/${encodeURIComponent(jobId)}/audio`);
+    const bytes = Buffer.from(await audioResponse.arrayBuffer());
+    if (!bytes.length || bytes.length > 100 * 1024 * 1024) throw new ServiceUnavailableException("MOSS returned empty or oversized audio");
+    await mkdir(this.root, { recursive: true });
+    const fileId = randomUUID();
+    await writeFile(join(this.root, `${fileId}.wav`), bytes);
+    scene.audioUrl = `/api/v1/stories/assets/${fileId}.wav`;
+    scene.voiceProfileId = scene.voiceJob.voiceId ?? null;
+    scene.voiceJob = null;
+    await this.save(story, story.id);
+    return { status: "completed", url: scene.audioUrl };
   }
 
   async render(story: Story) {
@@ -358,7 +500,7 @@ export class StoriesService {
     try {
       for (const [index, scene] of scenes.entries()) {
         const imagePath = this.assetFromUrl(scene.imageUrl, "png");
-        const audioPath = this.assetFromUrl(scene.audioUrl, "mp3");
+        const audioPath = this.assetFromUrl(scene.audioUrl, "audio");
         if (!imagePath || !audioPath) throw new BadRequestException(`Scene ${index + 1} needs a generated image and narration`);
         await Promise.all([access(imagePath), access(audioPath)]);
         const duration = Math.max(1, Math.min(60, Number(scene.duration) || 7));
