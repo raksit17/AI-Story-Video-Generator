@@ -204,7 +204,7 @@ export class StoriesService {
 
 
   private comfyUrl() {
-    return (process.env.COMFYUI_URL ?? "http://127.0.0.1:8188").replace(/\\/$/, "");
+    return (process.env.COMFYUI_URL ?? "http://127.0.0.1:8188").replace(/\/$/, "");
   }
 
   private sceneForImage(story: Story, sceneId: string): Record<string, any> {
@@ -302,7 +302,7 @@ export class StoriesService {
 
   private async importCompletedImage(storyId: string, sceneId: string, image: ComfyImage) {
     // Validate the descriptor before fetching. Avoid accepting another story's asset.
-    const folder = String(image.subfolder ?? "").replace(/\\/g, "/").replace(/\\/+$/, "");
+    const folder = String(image.subfolder ?? "").replace(/\\/g, "/").replace(/\/+$/, "");
     if (folder !== `AIStory/${storyId}` || !image.filename.startsWith(`${sceneId}_`)) {
       throw new ServiceUnavailableException("ComfyUI output does not belong to this scene");
     }
