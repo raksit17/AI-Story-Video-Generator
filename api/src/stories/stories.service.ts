@@ -306,7 +306,7 @@ export class StoriesService {
     const pending = scene.imageJob as { promptId: string; submittedAt: number } | undefined;
     const timeout = Number(process.env.COMFYUI_JOB_TIMEOUT_MS ?? 900000);
     if (pending?.promptId && Date.now() - pending.submittedAt < timeout) {
-      return { status: "queued", promptId: pending.promptId };
+      return { status: "queued", promptId: pending.promptId, referenceUsed: Boolean((pending as any).referenceUsed) };
     }
 
     const workflowPath = resolve("workflows/sdxl-background-api.json");
@@ -322,18 +322,30 @@ export class StoriesService {
     graph["7"].inputs.text = "text, watermark, logo, blurry, deformed, low quality";
     graph["9"].inputs.filename_prefix = `AIStory/${storyId}/${sceneId}`;
 
-    // The bundled SDXL graph is txt2img. When a saved character image exists,
-    // turn it into a low-denoise img2img seed using built-in ComfyUI nodes.
+    // Always resolve the latest saved profile; do not silently ignore an invalid reference.
     const characters = Array.isArray(story.characters) ? story.characters as Array<Record<string, unknown>> : [];
-    const reference = characters.find((character) => typeof character.referenceUrl === "string")?.referenceUrl;
-    const referencePath = this.assetFromUrl(reference, "image");
-    if (referencePath) {
-      const upload = await this.uploadComfyReference(referencePath);
-      graph["10"] = { class_type: "LoadImage", inputs: { image: upload } };
+    const character = characters.find((item) => item.id || item.referenceUrl);
+    const profileId = typeof character?.id === "string" ? character.id : undefined;
+    const profile = profileId && /^[0-9a-f-]{36}$/i.test(profileId) ? await this.readCharacter(profileId) : null;
+    const referenceUrl: unknown = profile?.referenceUrl ?? character?.referenceUrl ?? (story as any).character?.referenceUrl;
+    const hasReference = typeof referenceUrl === "string" && referenceUrl.trim().length > 0;
+    let referenceUsed = false;
+    if (hasReference) {
+      const path = this.assetFromUrl(referenceUrl, "image");
+      if (!path) throw new BadRequestException("Invalid character reference URL; please save the PNG/JPEG profile");
+      try { await access(path); }
+      catch { throw new BadRequestException("Character reference missing from API storage; upload it again"); }
+      const image = await this.uploadComfyReference(path);
+      graph["10"] = { class_type: "LoadImage", inputs: { image } };
       graph["12"] = { class_type: "ImageScale", inputs: { image: ["10", 0], upscale_method: "lanczos", width, height, crop: "center" } };
       graph["11"] = { class_type: "VAEEncode", inputs: { pixels: ["12", 0], vae: ["4", 2] } };
       graph["3"].inputs.latent_image = ["11", 0];
-      graph["3"].inputs.denoise = Math.min(0.65, Math.max(0.25, Number(process.env.COMFYUI_REFERENCE_DENOISE ?? 0.45)));
+      const denoise = Number(process.env.COMFYUI_REFERENCE_DENOISE ?? 0.45);
+      graph["3"].inputs.denoise = Number.isFinite(denoise) ? Math.max(0.25, Math.min(0.8, denoise)) : 0.45;
+      referenceUsed = true;
+      Logger.log(`Applying real img2img reference for scene ${sceneId}`, "StoryImage");
+    } else if (character?.id) {
+      Logger.warn(`Character ${String(character.id)} has no image; generating prompt-only`, "StoryImage");
     }
 
     let response: Response;
@@ -353,10 +365,11 @@ export class StoriesService {
     }
     const accepted = await response.json() as { prompt_id?: string };
     if (!accepted.prompt_id) throw new ServiceUnavailableException("ComfyUI did not return prompt_id");
-    scene.imageJob = { promptId: accepted.prompt_id, submittedAt: Date.now() };
+    scene.imageJob = { promptId: accepted.prompt_id, submittedAt: Date.now(), referenceUsed };
+    scene.imageReferenceUrl = referenceUsed ? referenceUrl : null;
     await this.save(story, storyId);
     Logger.log(`Image queued: story=${storyId} scene=${sceneId} prompt=${accepted.prompt_id}`, "StoryImage");
-    return { status: "queued", promptId: accepted.prompt_id };
+    return { status: "queued", promptId: accepted.prompt_id, referenceUsed };
   }
 
   private async uploadComfyReference(path: string): Promise<string> {
@@ -386,7 +399,7 @@ export class StoriesService {
 
     if (!job?.promptId) {
       if (typeof scene.imageUrl === "string" && scene.imageUrl) {
-        return { status: "completed", url: scene.imageUrl };
+        return { status: "completed", url: scene.imageUrl, referenceUsed: Boolean(scene.imageReferenceUrl) };
       }
       const previous = await recoverPreviousOutput(base, storyId, sceneId);
       if (previous) return this.importCompletedImage(storyId, sceneId, previous.image);
@@ -413,7 +426,7 @@ export class StoriesService {
         running = (data.queue_running ?? []).some((row) => row[1] === job.promptId);
       }
     } catch { /* History remains authoritative even if queue is temporarily unavailable. */ }
-    return { status: running ? "running" : "queued", promptId: job.promptId };
+    return { status: running ? "running" : "queued", promptId: job.promptId, referenceUsed: Boolean((job as any).referenceUsed) };
   }
 
   private async importCompletedImage(storyId: string, sceneId: string, image: ComfyImage) {
@@ -437,7 +450,7 @@ export class StoriesService {
     scene.imageJob = null;
     await this.save(story, storyId);
     Logger.log(`Imported ComfyUI image: story=${storyId} scene=${sceneId} bytes=${bytes.length}`, "StoryImage");
-    return { status: "completed", url };
+    return { status: "completed", url, referenceUsed: Boolean(scene.imageReferenceUrl) };
   }
 
   async generateVoice(story: Story, sceneId: string, requestedVoice?: string) {
