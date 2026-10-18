@@ -4,6 +4,7 @@ import { DatabaseModule } from "./database/database.module";
 import { VideosModule } from "./videos/videos.module";
 import { MediaModule } from "./media/media.module";
 import { ThumbnailsModule } from "./thumbnails/thumbnails.module";
+import { StoriesModule } from "./stories/stories.module";
 @Controller("health")
 class HealthController {
   constructor(private readonly db: DatabaseService) {}
@@ -13,7 +14,7 @@ class HealthController {
   }
 }
 @Module({
-  imports: [DatabaseModule, VideosModule, MediaModule, ThumbnailsModule],
+  imports: [DatabaseModule, VideosModule, MediaModule, ThumbnailsModule, StoriesModule],
   controllers: [HealthController],
 })
 export class AppModule {}
